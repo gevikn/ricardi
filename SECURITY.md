@@ -59,6 +59,13 @@ Learned the hard way, each one verified against a live agent:
   rules in the shipped example name no tool at all and match on the command,
   which is broader still.
 
+- **Matching must not depend on the platform.** `fnmatch.fnmatch` applies
+  `os.path.normcase`, which lowercases on Windows and does nothing on POSIX, so
+  rules matched through it were case-sensitive on Linux only — `GIT PUSH` evaded
+  a `*git push*` deny on one of two identical deployments. Policy matches with
+  `fnmatchcase` over explicitly lowered strings. CI runs the suite on Ubuntu and
+  Windows for this reason; a green run on one platform proves little.
+
 If you fork this and change how the agent is configured, re-read this list.
 
 ## What fails closed, and what does not

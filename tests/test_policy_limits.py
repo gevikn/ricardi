@@ -171,3 +171,53 @@ async def test_a_path_rule_is_not_fooled_by_the_same_tricks():
         assert await ok(root / ".." / "escape.txt") is False
         assert await ok(root / "a" / ".." / ".." / "escape.txt") is False
         assert await ok(Path(tmp) / "elsewhere.txt") is False
+
+
+# -- the same verdict on every platform -----------------------------------
+# Regression: fnmatch.fnmatch normalises case on Windows and not on POSIX, so
+# a deny rule written once behaved differently on two identical deployments.
+# These pin the behaviour to be identical everywhere, which is the only way a
+# policy reviewed on one machine means anything on the other.
+@pytest.mark.parametrize("command", [
+    "GIT PUSH ORIGIN MAIN",
+    "Git Push",
+    "gIt PuSh",
+    "RM -RF /tmp/x",
+    "CURL https://example.com",
+])
+async def test_shouting_does_not_evade_a_deny(command):
+    assert await allowed(command) is False, command
+
+
+@pytest.mark.parametrize("command", [
+    "PYTEST -q",
+    "PyTest tests/",
+])
+async def test_an_allow_is_equally_case_blind(command):
+    narrow = RulesPolicy([
+        Rule(effect="allow", tools=["Bash"], command_matches=["pytest*"]),
+    ])
+    request = Request(
+        action="tool",
+        principal=Principal(id="U1", email="a@b.c", known=True),
+        agent="bench", tool="Bash", tool_input={"command": command},
+    )
+    assert (await narrow.decide(request)).allow is True, command
+
+
+async def test_a_path_deny_ignores_case_too():
+    pol = RulesPolicy([
+        Rule(effect="allow", tools=["Read"]),
+        Rule(effect="deny", path_matches=["*/.env"]),
+    ])
+
+    async def ok(path):
+        request = Request(
+            action="tool",
+            principal=Principal(id="U1", email="a@b.c", known=True),
+            agent="bench", tool="Read", tool_input={"file_path": path},
+        )
+        return (await pol.decide(request)).allow
+
+    assert await ok("/repo/.ENV") is False
+    assert await ok(r"C:\Users\me\.Env") is False

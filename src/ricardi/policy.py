@@ -165,7 +165,7 @@ class Rule:
         if self.path_matches:
             paths = _paths(request.tool_input)
             if not paths or not any(
-                fnmatch.fnmatch(p.replace("\\", "/").lower(), pat.lower())
+                _glob(p.replace("\\", "/"), pat)
                 for p in paths
                 for pat in self.path_matches
             ):
@@ -176,7 +176,7 @@ class Rule:
             if not isinstance(command, str):
                 return False
             flat = " ".join(command.split())
-            if not any(fnmatch.fnmatch(flat, pat) for pat in self.command_matches):
+            if not any(_glob(flat, pat) for pat in self.command_matches):
                 return False
 
         return True
@@ -193,10 +193,22 @@ def _tool_matches(tool: str, patterns: tuple[str, ...]) -> bool:
     return _any_glob(tool, tuple(expanded))
 
 
+def _glob(value: str, pattern: str) -> bool:
+    """Case-insensitive glob that means the same thing on every platform.
+
+    `fnmatch.fnmatch` runs both sides through `os.path.normcase`, which
+    lowercases on Windows and does nothing on POSIX. Matching through it made
+    deny rules case-sensitive on Linux and not on Windows, so `GIT PUSH` evaded
+    a `*git push*` deny on one of two identical deployments. `fnmatchcase` over
+    explicitly lowered strings has no such opinion.
+    """
+    return fnmatch.fnmatchcase(value.lower(), pattern.lower())
+
+
 def _any_glob(value: str, patterns: tuple[str, ...]) -> bool:
     if not value:
         return False
-    return any(fnmatch.fnmatch(value.lower(), p.lower()) for p in patterns)
+    return any(_glob(value, p) for p in patterns)
 
 
 class RulesPolicy:
