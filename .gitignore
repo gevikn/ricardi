@@ -1,0 +1,12 @@
+.venv/
+.env
+__pycache__/
+*.pyc
+.pytest_cache/
+state/
+
+# Local config and scratch, as opposed to the committed examples.
+agents.toml
+smoke/
+smoke.log
+*.log

@@ -1,0 +1,37 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  offline:
+    # The shell tool is named differently per platform and policy rules match on
+    # that name, so both are tested. A green run on one proves little.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv venv
+      - run: uv pip install -e ".[slack,sdk]" pytest pytest-asyncio
+      # No tokens, no network, no Slack. The live suite is opt-in and never
+      # runs here: it starts real Claude Code sessions and spends real money.
+      - run: uv run pytest -q
+
+  examples:
+    # The shipped example files are what people copy, so they are checked as
+    # artefacts rather than trusted as prose.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv venv
+      - run: uv pip install -e ".[sdk]" pytest pytest-asyncio
+      - run: uv run pytest -q tests/test_policy.py tests/test_policy_limits.py -k example

@@ -1,0 +1,150 @@
+# Who may ask, and what the agent may then do.
+#
+# Copy to policy.toml and edit. Deny overrides allow, and anything no rule
+# allows is denied -- including, deliberately, anything you forgot.
+#
+# A rule matches when every dimension it names matches. Dimensions it leaves
+# out match everything, so a rule with only `tools` applies to every user,
+# channel and agent.
+
+# ---------------------------------------------------------------- the ceiling
+# How many turns one person may start. Each one spends money on this machine's
+# account, so an allowlisted person in a loop is an expensive accident. Zero or
+# absent means no ceiling.
+#
+# These bound how many turns there are; max_budget_usd in agents.toml bounds
+# what one turn may cost. You want both.
+[limits]
+turns_per_minute = 4
+turns_per_hour = 40
+
+# ---------------------------------------------------------------- the roster
+# Slack user id -> an email that is a label for humans and audit logs. This is
+# the whole identity story: no directory lookups, so no extra Slack scopes, no
+# reinstall, and nothing that can change under you without a reviewed diff.
+#
+# Find an id in Slack: click a profile -> More -> Copy member ID.
+# The local stub's default user, so `--transport local` works before you have
+# a Slack app. "local" can never be a Slack channel id (those start with C and
+# are uppercase), so this grants nothing in Slack -- but delete both this and
+# the rule below once you are past trying it out.
+[[identity]]
+slack = "tester"
+email = "tester@localhost"
+
+[[identity]]
+slack = "U00000000000"
+email = "you@example.com"
+
+[[identity]]
+slack = "U11111111111"
+email = "them@example.com"
+
+# ------------------------------------------------------------- who may ask
+[[rule]]
+name     = "the local stub, for trying it out before Slack exists"
+effect   = "allow"
+actions  = ["ask", "list"]
+users    = ["tester@localhost"]
+channels = ["local"]
+
+[[rule]]
+name     = "both of us, in the one channel we agreed on"
+effect   = "allow"
+actions  = ["ask", "list"]
+users    = ["you@example.com", "them@example.com"]
+channels = ["C00000000000"]          # the channel id, not its name
+
+# Narrow a single agent to fewer people by naming it. Without a rule like this
+# everyone above can reach every agent.
+# [[rule]]
+# name     = "only one of us drives bench"
+# effect   = "deny"
+# actions  = ["ask"]
+# agents   = ["bench"]
+# users    = ["them@example.com"]
+
+# ------------------------------------------------- what the agent may do
+# Reading is the whole point of a question-and-answer agent, and it is the one
+# thing that cannot change anything.
+[[rule]]
+name    = "read anything in the repo"
+effect  = "allow"
+actions = ["tool"]
+tools   = ["Read", "Grep", "Glob", "NotebookRead"]
+
+# Writing is confined by path. Point this at a worktree you would not mind
+# losing, so the containment is structural and this rule is the second line
+# rather than the only one.
+[[rule]]
+name       = "write only inside the shared experiment worktree"
+effect     = "allow"
+actions    = ["tool"]
+tools      = ["Write", "Edit", "NotebookEdit"]
+path_under = "~/experiments/bench"
+
+# Running things is where you and the other engineer have to actually agree.
+# Every allowed command announces itself in the thread before it runs, so the
+# agreement is visible while there is still time to object.
+# "shell" covers whichever shell tool the platform uses: Bash on macOS, Linux
+# and WSL, PowerShell on Windows. Naming one of them directly covers nothing on
+# the other, which is a quiet way to end up with no rule at all.
+[[rule]]
+name            = "experiments may be run, and are announced"
+effect          = "allow"
+actions         = ["tool"]
+tools           = ["shell"]
+obligations     = ["announce"]
+command_matches = [
+  "pytest*",
+  "python -m pytest*",
+  "python *",
+  "uv run *",
+  "git status*",
+  "git diff*",
+  "git log*",
+  "ls *",
+  "cat *",
+  "dir *",
+  "type *",
+  "Get-Content *",
+  "Get-ChildItem *",
+]
+
+# Deny wins over any allow above, whoever asks. These are the honest mistakes
+# worth catching -- not a security boundary, because no list of command
+# patterns survives $(...), pipes or a base64 payload. The boundary is the
+# worktree, the sandbox and the absence of push credentials.
+# No `tools` here on purpose: a deny that names one shell would miss the other,
+# and missing a deny is worse than missing an allow. Without it this matches any
+# tool whose input carries a command.
+[[rule]]
+name            = "never, whoever asks"
+effect          = "deny"
+actions         = ["tool"]
+command_matches = [
+  "*git push*",
+  "*git reset --hard*",
+  "*git clean*",
+  "*rm -rf*",
+  "*curl*",
+  "*wget*",
+  "*pip install*",
+  "*npm install*",
+  "*ssh *",
+  "*sudo*",
+]
+
+# Secrets are not read or written, by any tool, even inside an allowed path.
+# Two rules because a shell command and a file path are different shapes.
+[[rule]]
+name         = "no credential files, whichever tool asks"
+effect       = "deny"
+actions      = ["tool"]
+path_matches = ["*/.env", "*/.env.*", "*id_rsa*", "*/credentials*", "*/.aws/*"]
+
+[[rule]]
+name            = "nor by shelling out to read them"
+effect          = "deny"
+actions         = ["tool"]
+command_matches = ["*.env*", "*id_rsa*", "*credentials*", "*.aws*"]

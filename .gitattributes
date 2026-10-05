@@ -1,0 +1,4 @@
+# Normalised to LF in the repository, native in the working tree. This project
+# is run on Windows and Linux, and CI tests both, so the stored form should not
+# depend on which machine committed.
+* text=auto
