@@ -1,0 +1,11 @@
+# The actions in tests.yml go stale quietly: a pinned action keeps working
+# while its runtime is deprecated underneath it, and the only sign is a warning
+# nobody reads. Let Dependabot open the bump as a PR instead.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: "ci"

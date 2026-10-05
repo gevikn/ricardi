@@ -1,6 +1,6 @@
 # Ricardi
 
-[![tests](https://github.com/OWNER/ricardi/actions/workflows/tests.yml/badge.svg)](https://github.com/OWNER/ricardi/actions/workflows/tests.yml)
+[![tests](https://github.com/gevikn/ricardi/actions/workflows/tests.yml/badge.svg)](https://github.com/gevikn/ricardi/actions/workflows/tests.yml)
 
 
 A Slack bot that is a proxy to Claude Code agents running on a box. Humans and
