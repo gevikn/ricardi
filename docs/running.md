@@ -98,7 +98,9 @@ written, and that the service's working directory is where you think it is.
 
 ## Watching it
 
-- `state/audit.jsonl` — every decision. The denials are the interesting ones.
+- `python -m ricardi.report` — every decision, counted, with the refusals
+  grouped by the rule that caused them. Reads the rotated generations as well.
+- `state/audit.jsonl` — the same thing raw, one JSON object per line.
 - `state/service.log` or `journalctl` — connection, agents, policy errors.
 - Slack itself: if Ricardi is down, a mention simply gets no reply. There is no
   notification. Worth a check on whatever already watches your other services.

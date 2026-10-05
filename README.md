@@ -170,6 +170,9 @@ how long it may run. Both matter on a machine left running: the first bounds how
 many turns there are, the second bounds each one. A turn stopped by a ceiling
 says so rather than letting a truncated answer read as a finished one.
 
+`python -m ricardi.report` reads the audit log back: what ran, what was
+refused, and which rule refused it.
+
 An `announce` obligation posts a command into the thread before it runs. It is a
 **record, not a checkpoint** — nothing waits for a reply and there is no way to
 veto from Slack. It makes use visible, not reversible. The durable version is

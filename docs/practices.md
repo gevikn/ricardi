@@ -82,8 +82,12 @@ either someone is hitting a limit they did not know about, or an agent is
 circling something it should not be near. Both are worth knowing.
 
 ```bash
-grep '"allow": false' state/audit.jsonl | tail -20
+python -m ricardi.report                 # state/audit.jsonl by default
+python -m ricardi.report --hours 24      # just today
 ```
+
+It reads the rotated generations too, and groups refusals by the rule that
+fired — which is the question you actually have when something was blocked.
 
 ## Let the agent see its own limits
 
@@ -122,6 +126,13 @@ a narrow shell as well, which is why the shipped example permits `ls`, `cat`,
 `dir`, `type` and `Get-Content` alongside the read tools. And check
 `python -m ricardi.report` on each machine after a week: an allowed tool that
 never appears under "Tools used" on one of them is this, happening quietly.
+
+## Compare the two machines
+
+Running on Windows and Linux means one policy and two shells. Run the report on
+each after a week and diff the "Why refused" sections: the same rules should
+fire for the same reasons. A rule that fires on one machine and never on the
+other is the shape of a platform bug, and it is the only place you will see it.
 
 ## Restart it on purpose, early
 
