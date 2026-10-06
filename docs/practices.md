@@ -100,6 +100,18 @@ rather than looking for another way around*.
 It reads well in a demo and is noise in a real channel. The announced commands
 are the useful signal; everything else belongs in the log.
 
+## Expect the route to differ, not the verdict
+
+With the same policy on Windows and Linux, the decisions match — there are tests
+pinning that. What does not match is which tool an agent reaches for. Asked to
+list a directory, one went straight to the file search and the other tried the
+shell, was refused, and stopped.
+
+Neither is wrong, and policy worked correctly in both. But it means a task that
+succeeds on one machine can come back as "I couldn't, that's blocked" on the
+other. If a task matters, say which route to take in the agent's system prompt
+rather than leaving it to be rediscovered per platform.
+
 ## Restart it on purpose, early
 
 Ricardi's agents are child processes, so stopping it stops them. The transcripts
