@@ -66,6 +66,13 @@ Learned the hard way, each one verified against a live agent:
   `fnmatchcase` over explicitly lowered strings. CI runs the suite on Ubuntu and
   Windows for this reason; a green run on one platform proves little.
 
+- **A permitted tool may not exist.** The session's tool set varies by platform
+  and version: a Linux session had no `Glob` or `Grep` where a Windows one did.
+  Policy is unaffected — a rule for a tool that never runs simply never matches
+  — but an agent can end up far more limited than its policy suggests. That is
+  the safe direction, and still worth knowing before you conclude a rule is
+  working.
+
 If you fork this and change how the agent is configured, re-read this list.
 
 ## What fails closed, and what does not

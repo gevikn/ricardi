@@ -61,6 +61,12 @@ def spec(cwd, name="scout"):
 
 
 async def test_an_agent_reads_its_own_directory(scratch):
+    """That cwd took effect, using the one tool present on every platform.
+
+    A directory *listing* is not portable: Glob and Grep are absent from the
+    session on some platforms, where the agent reaches for the shell instead.
+    Read is everywhere, so this is what the cwd assertion rests on.
+    """
     backend = SdkBackend([spec(scratch)], turn_timeout=180, policy=reading_policy())
     try:
         answer = await backend.ask("scout", "What are the contents of marker.txt?")
@@ -76,29 +82,6 @@ async def test_an_agent_remembers_the_turn_before(scratch):
         # No mention of the file: only the session's own history can answer it.
         answer = await backend.ask("scout", "What did that file say? Repeat it exactly.")
         assert MARKER in answer, answer
-    finally:
-        await backend.close()
-
-
-async def test_an_agent_works_in_the_directory_it_was_given(scratch):
-    """Checks the cwd took effect, not that the agent cannot leave it.
-
-    The prompt says the shell is unavailable on purpose. Without that, the
-    agent's choice of tool varies by platform -- on Linux it reached for the
-    shell, was correctly refused, and stopped rather than trying the file
-    search -- so the test measured the model's judgement instead of whether
-    cwd was applied. Policy behaved identically on both; only the route did
-    not. Don't "simplify" this prompt back.
-    """
-    backend = SdkBackend([spec(scratch)], turn_timeout=180, policy=reading_policy())
-    try:
-        answer = await backend.ask(
-            "scout",
-            "Without using the shell, list the names of the files in this "
-            "directory. Use the file search tools.",
-        )
-        assert "marker.txt" in answer
-        assert "notes.md" in answer
     finally:
         await backend.close()
 

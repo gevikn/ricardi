@@ -100,17 +100,28 @@ rather than looking for another way around*.
 It reads well in a demo and is noise in a real channel. The announced commands
 are the useful signal; everything else belongs in the log.
 
-## Expect the route to differ, not the verdict
+## The tools on offer differ by platform, so read-only is not read-only
 
-With the same policy on Windows and Linux, the decisions match — there are tests
-pinning that. What does not match is which tool an agent reaches for. Asked to
-list a directory, one went straight to the file search and the other tried the
-shell, was refused, and stopped.
+With the same policy on Windows and Linux the decisions match — there are tests
+pinning that. **Which tools exist does not match.** Asked to list a directory
+with every tool permitted, a Linux session reached for the shell and nothing
+else; `Glob` and `Grep` were not in its tool set at all. On Windows they were.
 
-Neither is wrong, and policy worked correctly in both. But it means a task that
-succeeds on one machine can come back as "I couldn't, that's blocked" on the
-other. If a task matters, say which route to take in the agent's system prompt
-rather than leaving it to be rediscovered per platform.
+The consequence catches the obvious read-only policy:
+
+```toml
+tools = ["Read", "Grep", "Glob"]   # thorough on one platform, nearly empty on another
+```
+
+On a machine without `Glob` and `Grep`, that agent can read a file whose name it
+is given and discover nothing by itself. It will say so clearly — the refusals
+are good — but it will not be the agent you thought you configured.
+
+So: `Read` is the one you can rely on. If an agent needs to find things, give it
+a narrow shell as well, which is why the shipped example permits `ls`, `cat`,
+`dir`, `type` and `Get-Content` alongside the read tools. And check
+`python -m ricardi.report` on each machine after a week: an allowed tool that
+never appears under "Tools used" on one of them is this, happening quietly.
 
 ## Restart it on purpose, early
 
