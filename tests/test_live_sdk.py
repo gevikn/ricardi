@@ -81,12 +81,21 @@ async def test_an_agent_remembers_the_turn_before(scratch):
 
 
 async def test_an_agent_works_in_the_directory_it_was_given(scratch):
-    # Checks the cwd took effect, not that the agent cannot leave it: confinement
-    # is what allowed_tools and permission_mode buy, and is not asserted here.
+    """Checks the cwd took effect, not that the agent cannot leave it.
+
+    The prompt says the shell is unavailable on purpose. Without that, the
+    agent's choice of tool varies by platform -- on Linux it reached for the
+    shell, was correctly refused, and stopped rather than trying the file
+    search -- so the test measured the model's judgement instead of whether
+    cwd was applied. Policy behaved identically on both; only the route did
+    not. Don't "simplify" this prompt back.
+    """
     backend = SdkBackend([spec(scratch)], turn_timeout=180, policy=reading_policy())
     try:
         answer = await backend.ask(
-            "scout", "List every file in this directory, names only."
+            "scout",
+            "Without using the shell, list the names of the files in this "
+            "directory. Use the file search tools.",
         )
         assert "marker.txt" in answer
         assert "notes.md" in answer
