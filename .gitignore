@@ -7,6 +7,8 @@ state/
 
 # Local config and scratch, as opposed to the committed examples.
 agents.toml
+# Holds the roster: real Slack user ids and email addresses.
+policy.toml
 smoke/
 smoke.log
 *.log
