@@ -1,0 +1,17 @@
+# The image builds from pyproject, src and nothing else. Everything here is
+# either host-specific, secret, or large.
+.git
+.venv
+state
+tests
+docs
+scripts
+*.log
+.env
+.env.example
+agents.toml
+policy.toml
+__pycache__
+*.pyc
+.pytest_cache
+.github

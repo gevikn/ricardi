@@ -1,0 +1,65 @@
+# Ricardi, containerised.
+#
+#   cp .env.example .env                       # the two Slack tokens
+#   cp docker/agents.example.toml agents.toml
+#   cp docker/policy.example.toml policy.toml
+#   mkdir -p state claude-config workspace
+#   docker compose run --rm login              # sign Claude Code in, once
+#   docker compose up -d --build
+#
+# No ports. Socket Mode dials out, so nothing needs to listen and nothing is
+# published -- which is most of the reason this deployment is simple.
+
+services:
+  ricardi:
+    build:
+      context: .
+      args:
+        # Match the host user so bind-mounted files stay writable:
+        #   UID=$(id -u) GID=$(id -g) docker compose up -d --build
+        UID: ${UID:-1000}
+        GID: ${GID:-1000}
+    container_name: ricardi
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      # Claude Code's own config and credentials. A directory of its own
+      # rather than the host's ~/.claude: the container then holds one
+      # account's credentials and this project's transcripts, not everything.
+      - ${RICARDI_CLAUDE_DIR:-./claude-config}:/config/claude
+
+      # What the agents are allowed to work on. This mount IS the security
+      # boundary -- policy is the second line behind it. Mount the one
+      # worktree you mean, not a home directory.
+      - ${RICARDI_WORKSPACE:-./workspace}:/workspace
+
+      # Thread bindings, agent session ids, the audit log. Outside the
+      # container so a rebuild does not lose the conversations.
+      - ./state:/app/state
+
+      # Read-only: the container has no business editing who may ask for what.
+      - ./agents.toml:/app/agents.toml:ro
+      - ./policy.toml:/app/policy.toml:ro
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+
+  # One-shot sign-in. Claude Code needs a browser flow once; this runs it
+  # interactively and writes the result into the same mounted config, so the
+  # long-running service above finds it.
+  #
+  #   docker compose run --rm login
+  login:
+    build:
+      context: .
+      args:
+        UID: ${UID:-1000}
+        GID: ${GID:-1000}
+    profiles: ["setup"]
+    entrypoint: ["claude"]
+    command: ["/login"]
+    stdin_open: true
+    tty: true
+    volumes:
+      - ${RICARDI_CLAUDE_DIR:-./claude-config}:/config/claude
+      - ${RICARDI_WORKSPACE:-./workspace}:/workspace
