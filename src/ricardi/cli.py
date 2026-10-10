@@ -87,8 +87,8 @@ async def _serve(args: argparse.Namespace) -> int:
     else:
         from ricardi.transports.local import LocalTransport
 
-        transport = LocalTransport(port=args.port)
-        where = f"http://127.0.0.1:{args.port}"
+        transport = LocalTransport(host=args.host, port=args.port)
+        where = f"http://{args.host}:{args.port}"
 
     state = settings.state_dir / "threads.json" if settings.state_dir else None
     ricardi = Ricardi(
@@ -144,6 +144,13 @@ def main(argv: list[str] | None = None) -> int:
         help="fake answers without Claude, for checking the wiring",
     )
     parser.add_argument("--port", type=int, default=8808, help="local transport port")
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="local transport address; 0.0.0.0 to be reachable from outside a "
+             "container (the default binds to loopback, which a port mapping "
+             "cannot reach)",
+    )
     parser.add_argument("--env", default=str(here / ".env"))
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args(argv)

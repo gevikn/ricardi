@@ -5,122 +5,108 @@ A terminal you leave open is fine while you are shaking bugs out. It is not
 fine once anyone depends on it: a policy enforced only while someone is logged
 in is not much of a policy, and the first reboot ends every conversation.
 
-What survives a restart, once it is running again: thread bindings
-(`state/threads.json`), each agent's session id (`state/sessions.json`), and
-the audit log. What does not: anything an agent was mid-way through.
+What survives a restart: thread bindings (`state/threads.json`), each agent's
+session id (`state/sessions.json`), and the audit log. What does not: anything
+an agent was mid-way through.
 
-## Install it
+Nothing listens, in any of these. Socket Mode dials out to Slack, so there is
+no port to publish and none to defend.
 
-There is a script per platform. Each checks what actually breaks first — a
-missing `policy.toml`, a virtualenv that was never created, credentials the
-service account cannot see — and refuses with every reason at once, rather than
-installing something that starts and then cannot answer.
+## Docker
 
-```powershell
-.\scripts\install-service.ps1 -DryRun     # prints the plan, needs no elevation
-.\scripts\install-service.ps1             # from an elevated PowerShell
+The shortest path on any host, and the only one where the agent's reach is
+enforced by something other than a configuration file. `SECURITY.md` argues the
+real boundary is structural and policy is the second line behind it — a
+container is that boundary. The agent sees the one directory you mounted and
+nothing else on the machine, whatever a rule says.
+
+```bash
+cp .env.example .env                        # the two Slack tokens
+cp docker/agents.example.toml agents.toml
+cp docker/policy.example.toml policy.toml
+mkdir -p state claude-config workspace
+
+docker compose run --rm login               # sign Claude Code in, once
+docker compose up -d --build
+docker compose logs -f
 ```
+
+Both example files use **container** paths, so no host path appears in either
+and the same config works on any machine. `/workspace` is whatever you mount
+there; point it at the one worktree you mean, not a home directory.
+
+**Credentials.** The Agent SDK does not call an API — it spawns the `claude`
+CLI, which needs to be signed in. `docker compose run --rm login` does that
+once into `./claude-config`, mounted at `/config/claude`. A directory of its
+own rather than your host `~/.claude`, so the container holds one account's
+credentials and this project's transcripts, not everything you have ever done
+with Claude Code. Nothing is baked into the image.
+
+**File ownership.** The container runs as a non-root user, uid 1000 by default.
+If your host user differs, build with yours or the bind mounts will be
+read-only to it:
+
+```bash
+UID=$(id -u) GID=$(id -g) docker compose up -d --build
+```
+
+**What is mounted, and why each one.** `state/` outside the container so a
+rebuild does not lose the conversations; `agents.toml` and `policy.toml`
+read-only, since the container has no business editing who may ask for what.
+
+## Linux and macOS — systemd
+
+Without a container. Run `./scripts/install-service.sh` (`--dry-run` first),
+which writes a **user** unit, not a system one: it runs as you, with your
+`~/.claude`, and with no more access than you have.
+
+It also runs `loginctl enable-linger`, without which the unit stops the moment
+you log out of the box you sshed into.
 
 ```bash
 ./scripts/install-service.sh --dry-run
 ./scripts/install-service.sh
-```
-
-Both take `--uninstall` (`-Uninstall` on Windows), which stops and removes the
-service and leaves `state/` alone, so bindings, sessions and the audit log
-survive.
-
-They set automatic start, restart-on-failure after ten seconds, and
-`state/service.log` rotating at 10MB. On Linux it is a **user** unit rather than
-a system one, so it runs as you with your `~/.claude`, plus `loginctl
-enable-linger` — without which it stops the moment you log out of the box you
-sshed into.
-
-### The one step the Windows script will not do
-
-It installs everything, then stops and tells you to run:
-
-```
-nssm edit Ricardi   ->   Log on   ->   This account   ->   .\yourname
-```
-
-That is deliberate. nssm takes the account password as a **command-line
-argument**, which would put it in your shell history and in the process list
-where any other user can read it. The dialog has a password box; use that.
-
-Then `nssm start Ricardi`.
-
-## Windows — NSSM, by hand
-
-[NSSM](https://nssm.cc) is the least ceremonious way to make a Windows service
-out of a command, and the script above is only these commands in order.
-
-```powershell
-nssm install Ricardi "C:\path\to\ricardi\.venv\Scripts\python.exe"
-nssm set Ricardi AppParameters "-u -m ricardi.cli --transport slack --backend sdk"
-nssm set Ricardi AppDirectory "C:\path\to\ricardi"
-nssm set Ricardi AppStdout "C:\path\to\ricardi\state\service.log"
-nssm set Ricardi AppStderr "C:\path\to\ricardi\state\service.log"
-nssm set Ricardi AppRotateFiles 1
-nssm set Ricardi Start SERVICE_AUTO_START
-nssm start Ricardi
-```
-
-Two things that will catch you out:
-
-**The account.** A service runs as LocalSystem unless told otherwise, and
-LocalSystem is not you: it has a different home directory, so `~/.claude` is
-somewhere else and the agents have no Claude Code credentials. It is also far
-more privileged than you want for something that runs shell commands on request
-from a chat channel, which is the opposite of everything in `SECURITY.md`. Set
-it through `nssm edit`, never on the command line.
-
-**The environment.** A service does not inherit your shell. `.env` is read from
-`AppDirectory`, so that part is fine, but anything you rely on from your profile
-is not there.
-
-## Windows — Task Scheduler
-
-No extra software, slightly more clicking. Create a task that runs at logon (or
-at startup, with the account caveat above), action:
-
-```
-Program:   C:\path\to\ricardi\.venv\Scripts\python.exe
-Arguments: -u -m ricardi.cli --transport slack --backend sdk
-Start in:  C:\path\to\ricardi
-```
-
-Tick **Run whether user is logged on or not** only if you have thought about
-which account it then runs as. Under Settings, turn off "Stop the task if it
-runs longer than", which otherwise kills a long-lived process on a timer.
-
-## Linux and macOS — systemd
-
-```ini
-# ~/.config/systemd/user/ricardi.service
-[Unit]
-Description=Ricardi
-After=network-online.target
-
-[Service]
-WorkingDirectory=%h/ricardi
-ExecStart=%h/ricardi/.venv/bin/python -u -m ricardi.cli --transport slack --backend sdk
-Restart=on-failure
-RestartSec=10
-
-[Install]
-WantedBy=default.target
-```
-
-```bash
-systemctl --user daemon-reload
-systemctl --user enable --now ricardi
-loginctl enable-linger "$USER"   # or it stops when you log out
 journalctl --user -u ricardi -f
 ```
 
-A **user** unit rather than a system one, deliberately: it runs as you, with
-your `~/.claude`, and with no more access than you have.
+`--uninstall` removes it and leaves `state/` alone.
+
+## Windows
+
+Least likely to be what you want, and the most apparatus. Use Docker unless you
+specifically need a native Windows host — which you might, since the shell tool
+is `PowerShell` there and `Bash` everywhere else, and a policy that behaves
+identically on both is worth proving.
+
+```powershell
+.\scripts\install-service.ps1 -Scheduler -DryRun
+.\scripts\install-service.ps1 -Scheduler
+Start-ScheduledTask -TaskName Ricardi
+```
+
+`-Scheduler` registers a **logon task**: runs as you, no stored credential, no
+elevation. It starts when you log in and stops when you log out.
+
+For something that must stay up with nobody signed in, drop `-Scheduler` and it
+installs an [NSSM](https://nssm.cc) service instead — which needs `nssm` on
+PATH, an elevated prompt, and the account's **password**, set through `nssm
+edit` and never on the command line, where it would land in your shell history
+and the process list.
+
+Three things that catch people out:
+
+**The account.** A service runs as LocalSystem unless told otherwise, whose
+home directory is `C:\Windows\system32\config\systemprofile` — so `~\.claude`
+is not there, the agents cannot authenticate, and Ricardi refuses to start with
+a message naming the wrong path. A *virtual service account* has the same
+problem plus no read access to your repos. Only "This account" works.
+
+**A PIN is not a password.** Windows Hello is device-local and cannot be used
+for service logon. If you sign in with a PIN, use `-Scheduler`.
+
+**The environment.** A service does not inherit your shell. `.env` is read from
+the working directory, which is fine; anything else from your profile is not
+there.
 
 ## Check it is actually working
 
@@ -128,26 +114,30 @@ Restarting cleanly is something to find out on a Tuesday afternoon, not during
 an incident. After setting it up:
 
 1. Have a conversation in Slack — enough that the agent knows something.
-2. Restart the service.
-3. In the same thread, ask the agent about what you discussed, without
-   repeating it. If it answers, both halves survived.
-4. `tail state/audit.jsonl` — decisions should still be landing.
+2. Restart it (`docker compose restart`, `systemctl --user restart ricardi`,
+   or `Restart-ScheduledTask -TaskName Ricardi`).
+3. In the same thread, ask the agent about what you discussed, **without
+   repeating it**. If it answers, both halves survived.
+4. `python -m ricardi.report` — decisions should still be landing.
 
-If step 3 fails but the agent still replies, the thread binding survived and the
-session id did not. Check that `state/sessions.json` exists and is being
-written, and that the service's working directory is where you think it is.
+If step 3 answers but has forgotten, the thread binding survived and the session
+id did not. Check that `state/sessions.json` exists and is being written, and
+that the working directory is where you think it is. A bot that replies and has
+forgotten the last hour looks exactly like one that is working.
 
 ## Watching it
 
-- `python -m ricardi.report` — every decision, counted, with the refusals
-  grouped by the rule that caused them. Reads the rotated generations as well.
-- `state/audit.jsonl` — the same thing raw, one JSON object per line.
-- `state/service.log` or `journalctl` — connection, agents, policy errors.
+- `python -m ricardi.report` — every decision, counted, refusals grouped by the
+  rule that caused them. Reads rotated generations too.
+- `docker compose logs -f`, `journalctl --user -u ricardi -f`, or
+  `state/service.log` — connection, agents, policy errors.
 - Slack itself: if Ricardi is down, a mention simply gets no reply. There is no
-  notification. Worth a check on whatever already watches your other services.
+  notification. Worth adding to whatever already watches your other services.
 
 ## Upgrading
 
-Stop the service, pull, `uv pip install -e ".[slack,sdk]"`, run `pytest`, start
-it again. The state files are forward-compatible; nothing in `state/` needs
-clearing between versions.
+Docker: `git pull && docker compose up -d --build`.
+
+Otherwise: stop it, `git pull`, `uv pip install -e ".[slack,sdk]"`, run
+`pytest`, start it. The state files are forward-compatible; nothing in `state/`
+needs clearing between versions.

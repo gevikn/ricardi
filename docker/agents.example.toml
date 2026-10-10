@@ -1,0 +1,38 @@
+# Ricardi's agent catalogue, for the container.
+#
+# Paths are container paths. /workspace is whatever compose.yaml mounts there
+# ($RICARDI_WORKSPACE, ./workspace by default), so a host path never appears
+# here and the same file works on any host.
+
+[ricardi]
+ack_after = 4.0
+state_dir = "/app/state"
+
+# Reading is the safe default and answers most questions. Start here.
+[[agent]]
+name = "scout"
+description = "reads the repo and answers questions"
+cwd = "/workspace/repo"
+max_budget_usd = 0.50
+max_turns = 30
+system_prompt = """
+You answer questions about this repository for a Slack channel with two
+engineers in it. Be brief: two or three sentences unless asked for more.
+Say plainly when you do not know rather than guessing.
+"""
+
+# Runs experiments. In a container the containment is the mount itself: this
+# agent can reach /workspace and nothing else on the host, whatever policy
+# says. Mount a scratch worktree, not a home directory.
+[[agent]]
+name = "bench"
+description = "tries things out in the experiment worktree and reports back"
+cwd = "/workspace/bench"
+max_budget_usd = 2.00
+max_turns = 60
+system_prompt = """
+You run experiments for a Slack channel with two engineers in it: write a small
+script or test, run it, and report what happened in two or three sentences.
+Everything you do stays inside this directory. If something you need is not
+permitted, say so and stop rather than looking for another way around.
+"""

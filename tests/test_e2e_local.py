@@ -209,3 +209,19 @@ async def test_a_lying_content_length_does_not_hang_the_connection():
         assert backend.asked == []
     finally:
         await app.close()
+
+
+async def test_the_transport_binds_where_it_is_told():
+    """Regression: the default is loopback, which a container port mapping
+    cannot reach. The container start-up looked perfectly healthy and nothing
+    outside it could connect."""
+    transport = LocalTransport(host="127.0.0.1", port=0)
+    app = Ricardi(transport=transport, backend=FakeBackend(), ack_after=30.0,
+                  policy=open_policy())
+    await app.start()
+    try:
+        assert transport.host == "127.0.0.1"
+        status, _ = await call(transport.port, "GET", "/health")
+        assert status == 200
+    finally:
+        await app.close()

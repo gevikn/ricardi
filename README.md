@@ -103,6 +103,25 @@ gate against a live session: that a forbidden command does not run, that a
 permitted one does and is announced first, and that a write outside the allowed
 root never lands.
 
+## Deploying it
+
+```bash
+cp .env.example .env
+cp docker/agents.example.toml agents.toml
+cp docker/policy.example.toml policy.toml
+mkdir -p state claude-config workspace
+
+docker compose run --rm login     # sign Claude Code in, once
+docker compose up -d --build
+```
+
+No ports are published: Socket Mode dials out, so nothing needs to listen. The
+container is also the only deployment where the agent's reach is enforced by
+something other than a config file — it sees the directory you mounted at
+`/workspace` and nothing else on the machine.
+
+systemd and Windows are in [`docs/running.md`](docs/running.md).
+
 ## Slack setup
 
 The only part that needs a human. From <https://api.slack.com/apps>:
@@ -223,7 +242,7 @@ Two things to get right:
 | | |
 | :- | :- |
 | [`SECURITY.md`](SECURITY.md) | the threat model, and what silently disables enforcement |
-| [`docs/running.md`](docs/running.md) | keeping it running: `scripts/install-service.*`, NSSM, systemd |
+| [`docs/running.md`](docs/running.md) | keeping it running: Docker, systemd, Windows |
 | [`docs/practices.md`](docs/practices.md) | how to scope agents and review policy |
 | [`docs/roadmap.md`](docs/roadmap.md) | what is planned, including Teams |
 | [`docs/name.md`](docs/name.md) | why a transparent octopus |
