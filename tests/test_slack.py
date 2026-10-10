@@ -144,3 +144,27 @@ def test_the_transport_builds_a_bolt_app_with_arguments_bolt_accepts():
     assert not isinstance(outcome, TypeError), outcome
     assert transport._app is not None
     assert isinstance(transport._app, bolt.AsyncApp)
+
+
+# -- a refusal has to land where it will be read --------------------------
+def test_a_mention_that_starts_a_thread_is_marked_as_not_in_one():
+    # Slack shows an ephemeral message only to someone viewing the thread it
+    # was posted in, so this flag decides whether a refusal is visible at all.
+    event = {"text": "<@U01C> hello", "ts": "1700000000.000100", "channel": "C1", "user": "U9"}
+    assert from_mention(event).in_thread is False
+
+
+def test_a_mention_inside_a_thread_is_marked_as_in_one():
+    event = {
+        "text": "<@U01C> hello",
+        "ts": "1700000009.000900",
+        "thread_ts": "1700000000.000100",
+        "channel": "C1",
+        "user": "U9",
+    }
+    assert from_mention(event).in_thread is True
+
+
+def test_a_plain_thread_reply_is_always_in_a_thread():
+    event = {"text": "carry on", "thread_ts": "T1", "channel": "C1", "user": "U9"}
+    assert from_thread_reply(event, {"T1"}, bot_user_id="U01C").in_thread is True
