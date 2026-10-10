@@ -2,3 +2,14 @@
 # is run on Windows and Linux, and CI tests both, so the stored form should not
 # depend on which machine committed.
 * text=auto
+
+# Shell scripts stay LF even in a Windows working tree. With CRLF the first
+# real line of install-service.sh ends in a carriage return, bash rejects
+# "pipefail" as an invalid option name, and the script carries on with no
+# "set -e" at all -- while every path it builds picks up a trailing CR. A
+# Windows clone would hand exactly that to Linux and macOS. Verified: it
+# fails with `set: pipefail: invalid option name`.
+*.sh text eol=lf
+
+# Same reasoning, less dramatically: a RUN line breaks on a carriage return.
+Dockerfile text eol=lf
