@@ -50,6 +50,7 @@ def from_mention(event: dict) -> Inbound | None:
         thread=event.get("thread_ts") or event.get("ts") or "",
         channel=event.get("channel", ""),
         user=event.get("user", ""),
+        in_thread=bool(event.get("thread_ts")),
     )
 
 
@@ -84,6 +85,8 @@ def from_thread_reply(event: dict, ours: set[str], bot_user_id: str = "") -> Inb
         thread=thread,
         channel=event.get("channel", ""),
         user=event.get("user", ""),
+        # Only reached for a reply inside a thread, which they are reading.
+        in_thread=True,
     )
 
 

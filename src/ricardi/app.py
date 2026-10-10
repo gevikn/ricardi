@@ -134,10 +134,18 @@ class Ricardi:
         return resolve(inbound.user)
 
     async def _refuse(self, inbound: Inbound, text: str) -> None:
-        """Tell one person no, without announcing it to the channel."""
+        """Tell one person no, without announcing it to the channel.
+
+        A refusal to a message that just started a thread goes to the channel,
+        not into that thread: Slack shows an ephemeral message only to someone
+        already viewing the thread it was posted in, so the other way round it
+        is delivered, correct, and invisible -- which looks exactly like a bot
+        that is down, on the first message anyone ever sends.
+        """
         private = getattr(self.transport, "send_private", None)
         if private is not None:
-            await private(inbound.channel, inbound.thread, inbound.user, text)
+            where = inbound.thread if inbound.in_thread else ""
+            await private(inbound.channel, where, inbound.user, text)
             return
         await self._say(inbound, text)
 

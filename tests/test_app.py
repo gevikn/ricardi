@@ -272,3 +272,41 @@ async def test_with_no_policy_at_all_nothing_is_permitted():
     app = Ricardi(transport=transport, backend=backend, ack_after=30.0)
     await app.handle(message("tell scout to read auth.py"))
     assert backend.asked == []
+
+
+async def test_a_refusal_to_a_new_thread_goes_to_the_channel():
+    """Regression: it was delivered into a thread nobody had open.
+
+    Correct, instant, and invisible -- which on someone's first message looks
+    exactly like a bot that is down.
+    """
+    transport = PrivateRecorder()
+    app = Ricardi(
+        transport=transport,
+        backend=FakeBackend(),
+        ack_after=30.0,
+        policy=closed_policy(),
+    )
+    await app.handle(
+        Inbound(text="tell scout hi", thread="T1", channel="C1", user="u1", in_thread=False)
+    )
+    assert transport.private, "the person must be told"
+    thread, user, _ = transport.private[-1]
+    assert thread == "", "a refusal in an unopened thread is never seen"
+    assert user == "u1"
+
+
+async def test_a_refusal_inside_an_open_thread_stays_there():
+    # They are reading that thread, so the reply belongs with the message.
+    transport = PrivateRecorder()
+    app = Ricardi(
+        transport=transport,
+        backend=FakeBackend(),
+        ack_after=30.0,
+        policy=closed_policy(),
+    )
+    await app.handle(
+        Inbound(text="tell scout hi", thread="T1", channel="C1", user="u1", in_thread=True)
+    )
+    thread, _, _ = transport.private[-1]
+    assert thread == "T1"

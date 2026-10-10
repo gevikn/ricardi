@@ -16,6 +16,11 @@ class Inbound:
     thread: str
     channel: str = ""
     user: str = ""
+    # Whether this arrived inside a thread someone already has open, as opposed
+    # to starting one. It decides where a refusal can actually be seen: Slack
+    # renders an ephemeral message in a thread only to someone viewing that
+    # thread, so a refusal to a message that just started one is invisible.
+    in_thread: bool = False
 
 
 OnMessage = Callable[[Inbound], Awaitable[None]]
