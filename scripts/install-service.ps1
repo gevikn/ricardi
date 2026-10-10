@@ -30,11 +30,65 @@
 param(
     [string]$Name = 'Ricardi',
     [switch]$DryRun,
-    [switch]$Uninstall
+    [switch]$Uninstall,
+    # Register a logon task instead of a service. A service must run as a named
+    # account and Windows wants that account's password; an account you sign
+    # into with a PIN has one you never type, and resetting it to run a bot is
+    # the wrong trade. A task runs as you with no stored credential -- at the
+    # cost of starting at logon rather than at boot, and stopping at logout.
+    [switch]$Scheduler
 )
 
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
+
+function Invoke-SchedulerInstall([string]$Root, [string]$Name, [bool]$DryRun, [bool]$Uninstall) {
+    # [Environment] rather than $env:, which was empty when this script was
+    # launched from a shell that does not set USERNAME -- and a task with an
+    # empty principal is registered against nobody.
+    $who    = "{0}\{1}" -f [Environment]::UserDomainName, [Environment]::UserName
+    $python = Join-Path $Root '.venv\Scripts\python.exe'
+    # nssm captures stdout for us; a scheduled task does not, so the process
+    # redirects its own output or there is nothing to read when it misbehaves.
+    $log    = Join-Path $Root 'state\service.log'
+    $args   = "-u -m ricardi.cli --transport slack --backend sdk"
+
+
+    if ($Uninstall) {
+        if ($DryRun) { Write-Host "would run: Unregister-ScheduledTask -TaskName $Name"; return }
+        Unregister-ScheduledTask -TaskName $Name -Confirm:$false -ErrorAction SilentlyContinue
+        Write-Host "Removed the $Name task. state\ is untouched."
+        return
+    }
+
+    if ($DryRun) {
+        Write-Host "would register a logon task '$Name' running as ${who}:"
+        Write-Host "    $python $args"
+        Write-Host "    in $Root, no stored password, restarting up to 3 times a minute apart"
+        return
+    }
+
+    $action = New-ScheduledTaskAction -Execute $python -Argument $args -WorkingDirectory $Root
+    $trigger = New-ScheduledTaskTrigger -AtLogOn -User "$who"
+    # ExecutionTimeLimit 0 means "never kill it", which a long-running process
+    # needs; the default stops the task after three days.
+    $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit 0 `
+        -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) `
+        -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
+    $principal = New-ScheduledTaskPrincipal -UserId "$who" -LogonType Interactive
+
+    Register-ScheduledTask -TaskName $Name -Action $action -Trigger $trigger `
+        -Settings $settings -Principal $principal -Force | Out-Null
+
+    Write-Host "Registered the logon task '$Name', running as ${who} with no stored password."
+    Write-Host ''
+    Write-Host "Start it now:  Start-ScheduledTask -TaskName $Name"
+    Write-Host "Watch:         Get-Content -Wait `"$(Join-Path $Root 'state\service.log')`""
+    Write-Host ''
+    Write-Host 'It starts when you log in and stops when you log out. For a box that must'
+    Write-Host 'stay up with nobody signed in, use a service (an account password) or the'
+    Write-Host 'Linux host, whose user unit needs no credential at all.'
+}
 
 # nssm writes everything -- its banner, progress, and errors alike -- to
 # stderr. With ErrorActionPreference set to Stop, PowerShell turns any of that
@@ -155,6 +209,20 @@ function Get-NssmPlan([string]$Root, [string]$Name, [bool]$Exists = $false) {
         , @('set', $Name, 'Start', 'SERVICE_AUTO_START')
         , @('set', $Name, 'Description', 'Ricardi: a Slack proxy to Claude Code agents')
     )
+}
+
+if ($Scheduler) {
+    if (-not $Uninstall) {
+        $problems = Get-InstallProblems $Root $false   # a task needs no elevation
+        if ($problems.Count -gt 0) {
+            Write-Host 'Not ready:' -ForegroundColor Yellow
+            foreach ($p in $problems) { Write-Host "  - $p" }
+            exit 1
+        }
+        New-Item -ItemType Directory -Force (Join-Path $Root 'state') | Out-Null
+    }
+    Invoke-SchedulerInstall $Root $Name ([bool]$DryRun) ([bool]$Uninstall)
+    exit 0
 }
 
 # --- uninstall ---------------------------------------------------------
