@@ -109,6 +109,12 @@ Start-ScheduledTask -TaskName Ricardi
 `-Scheduler` registers a **logon task**: runs as you, no stored credential, no
 elevation. It starts when you log in and stops when you log out.
 
+A task has no console and captures nothing, so the installer passes
+`--log-file state\service.log` and Ricardi writes its own log, rotating at
+10MB. Without it the task runs perfectly and leaves nothing to read, which
+looks exactly like being down. Docker and systemd capture stdout themselves,
+so neither needs the flag.
+
 For something that must stay up with nobody signed in, drop `-Scheduler` and it
 installs an [NSSM](https://nssm.cc) service instead — which needs `nssm` on
 PATH, an elevated prompt, and the account's **password**, set through `nssm
@@ -137,7 +143,9 @@ an incident. After setting it up:
 
 1. Have a conversation in Slack — enough that the agent knows something.
 2. Restart it (`docker compose restart`, `systemctl --user restart ricardi`,
-   or `Restart-ScheduledTask -TaskName Ricardi`).
+   or, on Windows, `Stop-ScheduledTask -TaskName Ricardi` and then
+   `Start-ScheduledTask -TaskName Ricardi` — there is no
+   `Restart-ScheduledTask`, whatever the symmetry suggests).
 3. In the same thread, ask the agent about what you discussed, **without
    repeating it**. If it answers, both halves survived.
 4. `python -m ricardi.report` — decisions should still be landing.
@@ -152,7 +160,9 @@ forgotten the last hour looks exactly like one that is working.
 - `python -m ricardi.report` — every decision, counted, refusals grouped by the
   rule that caused them. Reads rotated generations too.
 - `docker compose logs -f`, `journalctl --user -u ricardi -f`, or
-  `state/service.log` — connection, agents, policy errors.
+  `Get-Content -Wait state\service.log` — connection, agents, policy errors.
+  The first line names the transport, the agents, and how many rules loaded,
+  which is the line you want when reading back weeks later.
 - Slack itself: if Ricardi is down, a mention simply gets no reply. There is no
   notification. Worth adding to whatever already watches your other services.
 
