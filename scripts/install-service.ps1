@@ -48,11 +48,12 @@ function Invoke-SchedulerInstall([string]$Root, [string]$Name, [bool]$DryRun, [b
     # empty principal is registered against nobody.
     $who    = "{0}\{1}" -f [Environment]::UserDomainName, [Environment]::UserName
     $python = Join-Path $Root '.venv\Scripts\python.exe'
-    # nssm captures stdout for us; a scheduled task does not, so the process
-    # redirects its own output or there is nothing to read when it misbehaves.
+    # nssm captures stdout for us; a scheduled task does not, so ricardi is
+    # told to write its own log or there is nothing to read when it misbehaves.
+    # Named $cliArgs, not $args: inside a function $args is the automatic
+    # unbound-argument array, and assigning to it works only by accident.
     $log    = Join-Path $Root 'state\service.log'
-    $args   = "-u -m ricardi.cli --transport slack --backend sdk"
-
+    $cliArgs = "-u -m ricardi.cli --transport slack --backend sdk --log-file `"$log`""
 
     if ($Uninstall) {
         if ($DryRun) { Write-Host "would run: Unregister-ScheduledTask -TaskName $Name"; return }
@@ -63,12 +64,17 @@ function Invoke-SchedulerInstall([string]$Root, [string]$Name, [bool]$DryRun, [b
 
     if ($DryRun) {
         Write-Host "would register a logon task '$Name' running as ${who}:"
-        Write-Host "    $python $args"
+        # The same string the real run registers, so the preview cannot
+        # disagree with what actually gets installed.
+        Write-Host "    $python $cliArgs"
         Write-Host "    in $Root, no stored password, restarting up to 3 times a minute apart"
         return
     }
 
-    $action = New-ScheduledTaskAction -Execute $python -Argument $args -WorkingDirectory $Root
+    # No cmd wrapper: ricardi writes the log itself via --log-file, so the
+    # task runs python directly and there is no shell quoting to get wrong.
+    $action = New-ScheduledTaskAction -Execute $python `
+        -Argument $cliArgs -WorkingDirectory $Root
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User "$who"
     # ExecutionTimeLimit 0 means "never kill it", which a long-running process
     # needs; the default stops the task after three days.
