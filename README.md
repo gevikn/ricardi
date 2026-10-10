@@ -154,7 +154,9 @@ container is also the only deployment where the agent's reach is enforced by
 something other than a config file — it sees the directory you mounted at
 `/workspace` and nothing else on the machine.
 
-systemd and Windows are in [`docs/running.md`](docs/running.md).
+systemd, launchd and Windows are in [`docs/running.md`](docs/running.md),
+which leads on the question that decides the rest: whether it survives you
+logging out.
 
 ## Slack setup
 
@@ -276,7 +278,7 @@ Two things to get right:
 | | |
 | :- | :- |
 | [`SECURITY.md`](SECURITY.md) | the threat model, and what silently disables enforcement |
-| [`docs/running.md`](docs/running.md) | keeping it running: Docker, systemd, Windows |
+| [`docs/running.md`](docs/running.md) | keeping it running, and which deployments survive a logout |
 | [`docs/practices.md`](docs/practices.md) | how to scope agents and review policy |
 | [`docs/roadmap.md`](docs/roadmap.md) | what is planned, including Teams |
 | [`docs/name.md`](docs/name.md) | why a transparent octopus |
