@@ -223,7 +223,7 @@ Two things to get right:
 | | |
 | :- | :- |
 | [`SECURITY.md`](SECURITY.md) | the threat model, and what silently disables enforcement |
-| [`docs/running.md`](docs/running.md) | keeping it running: NSSM, Task Scheduler, systemd |
+| [`docs/running.md`](docs/running.md) | keeping it running: `scripts/install-service.*`, NSSM, systemd |
 | [`docs/practices.md`](docs/practices.md) | how to scope agents and review policy |
 | [`docs/roadmap.md`](docs/roadmap.md) | what is planned, including Teams |
 | [`docs/name.md`](docs/name.md) | why a transparent octopus |

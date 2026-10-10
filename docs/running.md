@@ -9,10 +9,51 @@ What survives a restart, once it is running again: thread bindings
 (`state/threads.json`), each agent's session id (`state/sessions.json`), and
 the audit log. What does not: anything an agent was mid-way through.
 
-## Windows — NSSM
+## Install it
+
+There is a script per platform. Each checks what actually breaks first — a
+missing `policy.toml`, a virtualenv that was never created, credentials the
+service account cannot see — and refuses with every reason at once, rather than
+installing something that starts and then cannot answer.
+
+```powershell
+.\scripts\install-service.ps1 -DryRun     # prints the plan, needs no elevation
+.\scripts\install-service.ps1             # from an elevated PowerShell
+```
+
+```bash
+./scripts/install-service.sh --dry-run
+./scripts/install-service.sh
+```
+
+Both take `--uninstall` (`-Uninstall` on Windows), which stops and removes the
+service and leaves `state/` alone, so bindings, sessions and the audit log
+survive.
+
+They set automatic start, restart-on-failure after ten seconds, and
+`state/service.log` rotating at 10MB. On Linux it is a **user** unit rather than
+a system one, so it runs as you with your `~/.claude`, plus `loginctl
+enable-linger` — without which it stops the moment you log out of the box you
+sshed into.
+
+### The one step the Windows script will not do
+
+It installs everything, then stops and tells you to run:
+
+```
+nssm edit Ricardi   ->   Log on   ->   This account   ->   .\yourname
+```
+
+That is deliberate. nssm takes the account password as a **command-line
+argument**, which would put it in your shell history and in the process list
+where any other user can read it. The dialog has a password box; use that.
+
+Then `nssm start Ricardi`.
+
+## Windows — NSSM, by hand
 
 [NSSM](https://nssm.cc) is the least ceremonious way to make a Windows service
-out of a command.
+out of a command, and the script above is only these commands in order.
 
 ```powershell
 nssm install Ricardi "C:\path\to\ricardi\.venv\Scripts\python.exe"
@@ -29,10 +70,10 @@ Two things that will catch you out:
 
 **The account.** A service runs as LocalSystem unless told otherwise, and
 LocalSystem is not you: it has a different home directory, so `~/.claude` is
-somewhere else and the agents have no Claude Code credentials. Set it to your
-own account — `nssm set Ricardi ObjectName ".\\yourname" "password"` — or accept
-that you are running agents as a far more privileged user than you meant to,
-which is the opposite of everything in `SECURITY.md`.
+somewhere else and the agents have no Claude Code credentials. It is also far
+more privileged than you want for something that runs shell commands on request
+from a chat channel, which is the opposite of everything in `SECURITY.md`. Set
+it through `nssm edit`, never on the command line.
 
 **The environment.** A service does not inherit your shell. `.env` is read from
 `AppDirectory`, so that part is fine, but anything you rely on from your profile
