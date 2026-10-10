@@ -45,7 +45,12 @@ function Invoke-Nssm([string[]]$Arguments) {
     $previous = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        $output = & nssm @Arguments 2>&1 | ForEach-Object { $_.ToString() }
+        $output = & nssm @Arguments 2>&1 | ForEach-Object {
+            # A native command's stderr arrives as ErrorRecord, whose ToString()
+            # is the useless "System.Management.Automation.RemoteException".
+            if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message }
+            else { $_.ToString() }
+        }
         $code = $LASTEXITCODE
     } finally {
         $ErrorActionPreference = $previous
@@ -125,14 +130,20 @@ function Get-InstallProblems([string]$Root, [bool]$NeedElevation = $true) {
     , $problems
 }
 
-function Get-NssmPlan([string]$Root, [string]$Name) {
+function Get-NssmPlan([string]$Root, [string]$Name, [bool]$Exists = $false) {
     $python = Join-Path $Root '.venv\Scripts\python.exe'
     $log    = Join-Path $Root 'state\service.log'
+    # Running this twice, or after a half-finished attempt, has to be safe:
+    # there are two machines and the first run here left a service behind with
+    # no program set. `install` refuses when one exists, so update it instead
+    # and set Application explicitly, which `install` would otherwise have done.
+    $first = if ($Exists) { @('set', $Name, 'Application', $python) }
+             else         { @('install', $Name, $python) }
     # Each row is prefixed with a comma. Without it PowerShell flattens an
     # array of arrays into one flat list of strings, and every nssm call gets
     # a single word -- `nssm install` with no program, which just prints usage.
     @(
-        , @('install', $Name, $python)
+        , $first
         , @('set', $Name, 'AppParameters', '-u -m ricardi.cli --transport slack --backend sdk')
         , @('set', $Name, 'AppDirectory', $Root)
         , @('set', $Name, 'AppStdout', $log)
@@ -174,7 +185,17 @@ if ($problems.Count -gt 0) {
 
 New-Item -ItemType Directory -Force (Join-Path $Root 'state') | Out-Null
 
-foreach ($a in (Get-NssmPlan $Root $Name)) {
+$existing = Get-Service -Name $Name -ErrorAction SilentlyContinue
+if ($existing) {
+    Write-Host "$Name already exists ($($existing.Status)); updating it in place." -ForegroundColor Cyan
+    if ($existing.Status -eq 'Running') {
+        Write-Host '  stopping it first'
+        [void](Step-Nssm @('stop', $Name))
+    }
+    Write-Host ''
+}
+
+foreach ($a in (Get-NssmPlan $Root $Name ([bool]$existing))) {
     if ($DryRun) { Write-Host "would run: nssm $($a -join ' ')"; continue }
     Write-Host ("nssm {0}" -f ($a -join ' '))
     if (-not (Step-Nssm $a)) {
