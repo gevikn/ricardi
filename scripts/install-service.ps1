@@ -36,6 +36,55 @@ param(
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
 
+# nssm writes everything -- its banner, progress, and errors alike -- to
+# stderr. With ErrorActionPreference set to Stop, PowerShell turns any of that
+# into a terminating NativeCommandError, so the first nssm call killed the
+# script and reported the banner as the failure. Run native commands with the
+# preference relaxed and judge them by their exit code instead.
+function Invoke-Nssm([string[]]$Arguments) {
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $output = & nssm @Arguments 2>&1 | ForEach-Object { $_.ToString() }
+        $code = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previous
+    }
+    [pscustomobject]@{
+        Code   = $code
+        Output = ($output | Where-Object { $_ -and $_.Trim() }) -join [Environment]::NewLine
+    }
+}
+
+# nssm said "Administrator access is needed to install a service." and still
+# exited 0, so the exit code alone is not a verdict. Judge it by what it says
+# as well, and -- for the install itself -- by whether the service appeared.
+$script:NssmFailureText = @(
+    'Administrator access is needed'
+    'Usage:'
+    'The specified service already exists'
+    'Could not'
+    'Access is denied'
+)
+
+function Step-Nssm([string[]]$Arguments) {
+    $r = Invoke-Nssm $Arguments
+    $said = $r.Output
+    $looksWrong = $false
+    foreach ($pattern in $script:NssmFailureText) {
+        if ($said -and $said -like "*$pattern*") { $looksWrong = $true; break }
+    }
+    if ($r.Code -ne 0 -or $looksWrong) {
+        Write-Host ("nssm {0}" -f ($Arguments -join ' ')) -ForegroundColor Yellow
+        Write-Host ("  exit {0}" -f $r.Code) -ForegroundColor Yellow
+        if ($r.Output) { $r.Output -split "`n" | ForEach-Object { Write-Host "  $_" } }
+        return $false
+    }
+    # Success still prints a banner; show it only when it says something.
+    if ($r.Output -and $r.Output -notmatch '^NSSM: ') { Write-Host "  $($r.Output)" }
+    return $true
+}
+
 function Test-Elevated {
     $id = [Security.Principal.WindowsIdentity]::GetCurrent()
     ([Security.Principal.WindowsPrincipal]$id).IsInRole(
@@ -79,18 +128,21 @@ function Get-InstallProblems([string]$Root, [bool]$NeedElevation = $true) {
 function Get-NssmPlan([string]$Root, [string]$Name) {
     $python = Join-Path $Root '.venv\Scripts\python.exe'
     $log    = Join-Path $Root 'state\service.log'
+    # Each row is prefixed with a comma. Without it PowerShell flattens an
+    # array of arrays into one flat list of strings, and every nssm call gets
+    # a single word -- `nssm install` with no program, which just prints usage.
     @(
-        @('install', $Name, $python)
-        @('set', $Name, 'AppParameters', '-u -m ricardi.cli --transport slack --backend sdk')
-        @('set', $Name, 'AppDirectory', $Root)
-        @('set', $Name, 'AppStdout', $log)
-        @('set', $Name, 'AppStderr', $log)
-        @('set', $Name, 'AppRotateFiles', '1')
-        @('set', $Name, 'AppRotateBytes', '10485760')
-        @('set', $Name, 'AppExit', 'Default', 'Restart')
-        @('set', $Name, 'AppRestartDelay', '10000')
-        @('set', $Name, 'Start', 'SERVICE_AUTO_START')
-        @('set', $Name, 'Description', 'Ricardi: a Slack proxy to Claude Code agents')
+        , @('install', $Name, $python)
+        , @('set', $Name, 'AppParameters', '-u -m ricardi.cli --transport slack --backend sdk')
+        , @('set', $Name, 'AppDirectory', $Root)
+        , @('set', $Name, 'AppStdout', $log)
+        , @('set', $Name, 'AppStderr', $log)
+        , @('set', $Name, 'AppRotateFiles', '1')
+        , @('set', $Name, 'AppRotateBytes', '10485760')
+        , @('set', $Name, 'AppExit', 'Default', 'Restart')
+        , @('set', $Name, 'AppRestartDelay', '10000')
+        , @('set', $Name, 'Start', 'SERVICE_AUTO_START')
+        , @('set', $Name, 'Description', 'Ricardi: a Slack proxy to Claude Code agents')
     )
 }
 
@@ -100,9 +152,10 @@ if ($Uninstall) {
         Write-Host 'Removing a service needs an administrator PowerShell.' -ForegroundColor Yellow
         exit 1
     }
-    foreach ($args in @(@('stop', $Name), @('remove', $Name, 'confirm'))) {
-        if ($DryRun) { Write-Host "would run: nssm $($args -join ' ')"; continue }
-        & nssm @args 2>&1 | Write-Host
+    foreach ($a in @(@('stop', $Name), @('remove', $Name, 'confirm'))) {
+        if ($DryRun) { Write-Host "would run: nssm $($a -join ' ')"; continue }
+        # A service that is already stopped makes `stop` fail; that is fine.
+        [void](Step-Nssm $a)
     }
     if (-not $DryRun) {
         Write-Host ''
@@ -121,9 +174,15 @@ if ($problems.Count -gt 0) {
 
 New-Item -ItemType Directory -Force (Join-Path $Root 'state') | Out-Null
 
-foreach ($args in (Get-NssmPlan $Root $Name)) {
-    if ($DryRun) { Write-Host "would run: nssm $($args -join ' ')"; continue }
-    & nssm @args 2>&1 | Write-Host
+foreach ($a in (Get-NssmPlan $Root $Name)) {
+    if ($DryRun) { Write-Host "would run: nssm $($a -join ' ')"; continue }
+    Write-Host ("nssm {0}" -f ($a -join ' '))
+    if (-not (Step-Nssm $a)) {
+        Write-Host ''
+        Write-Host 'Stopped there. Nothing further was changed.' -ForegroundColor Yellow
+        Write-Host "If the service half exists, remove it with: .\scripts\install-service.ps1 -Uninstall"
+        exit 1
+    }
 }
 
 if ($DryRun) {
