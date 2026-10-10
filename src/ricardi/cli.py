@@ -7,6 +7,7 @@ import asyncio
 import logging
 import os
 import sys
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from ricardi import config, policy as policy_mod, readiness
@@ -109,13 +110,15 @@ async def _serve(args: argparse.Namespace) -> int:
     # instead of grepping the container log, which on the box loses its
     # newest lines and so answers "is it up" with a previous boot's word.
     readiness.mark_ready(settings.state_dir, where=where, agents=names)
-    print(
-        f"ricardi on {where}; agents: {', '.join(names)}; "
-        f"{len(policy.rules)} rules, {len(policy.roster)} people"
-        + (f", {per_hour}/hour" if per_hour else "")
-        + (f", {per_minute}/minute" if per_minute else "")
-        + f"; audit {audit_path}",
-        flush=True,
+    # Logged rather than printed, so --log-file catches the one line that says
+    # what this process actually is. A banner only on stdout is the line you
+    # most want when reading a log weeks later.
+    logging.getLogger("ricardi").info(
+        "ricardi on %s; agents: %s; %d rules, %d people%s%s; audit %s",
+        where, ", ".join(names), len(policy.rules), len(policy.roster),
+        f", {per_hour}/hour" if per_hour else "",
+        f", {per_minute}/minute" if per_minute else "",
+        audit_path,
     )
     try:
         await asyncio.Event().wait()
@@ -124,6 +127,28 @@ async def _serve(args: argparse.Namespace) -> int:
     finally:
         await ricardi.close()
     return 0
+
+
+def log_handlers(log_file: str) -> list[logging.Handler]:
+    """Where the log goes: the console, and a file as well when asked for one.
+
+    Its own function because the file half is the part that can silently not
+    happen -- a Windows scheduled task captures nothing, so a process that
+    logs only to a console it does not have runs perfectly and leaves nothing
+    behind. Worth a test rather than a hope.
+    """
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    if not log_file:
+        return handlers
+    path = Path(log_file).expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Rotating, because this is the log of something meant to run for months:
+    # 10MB and five generations, the same shape as the audit log.
+    handlers.append(
+        RotatingFileHandler(path, maxBytes=10 * 1024 * 1024, backupCount=5,
+                            encoding="utf-8")
+    )
+    return handlers
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -160,10 +185,18 @@ def main(argv: list[str] | None = None) -> int:
              "cannot reach)",
     )
     parser.add_argument("--env", default=str(here / ".env"))
+    parser.add_argument(
+        "--log-file",
+        default="",
+        help="also write the log here, rotating at 10MB. A Windows scheduled "
+             "task captures nothing on its own, so without this it runs "
+             "perfectly and leaves nothing to read",
+    )
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args(argv)
 
     logging.basicConfig(
+        handlers=log_handlers(args.log_file),
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
