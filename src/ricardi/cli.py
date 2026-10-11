@@ -95,6 +95,34 @@ async def _serve(args: argparse.Namespace) -> int:
         transport = LocalTransport(host=args.host, port=args.port)
         where = f"http://{args.host}:{args.port}"
 
+    # The credential is the half that dies quietly: Slack stays up and every
+    # agent fails, which from a channel is indistinguishable from the box being
+    # switched off. Nothing to watch behind the fake backend, which needs no
+    # credential to answer.
+    watch = None
+    if args.backend != "fake" and settings.health_every > 0:
+        from ricardi.health import CredentialWatch, sdk_probe
+
+        channel = settings.alert_channel
+
+        async def announce(text: str) -> None:
+            # Channel root, not a thread: nobody is reading a thread when the
+            # thing that would have replied in it is the thing that is broken.
+            await transport.send(channel, "", text)
+
+        if not channel:
+            logging.getLogger("ricardi").warning(
+                "no alert_channel set in %s, so a dead credential will show up "
+                "only in the log. Add one under [ricardi] to hear about it in "
+                "Slack instead.",
+                args.agents,
+            )
+        watch = CredentialWatch(
+            probe=sdk_probe(),
+            announce=announce if channel else None,
+            every=settings.health_every,
+        )
+
     state = settings.state_dir / "threads.json" if settings.state_dir else None
     ricardi = Ricardi(
         transport=transport,
@@ -102,6 +130,7 @@ async def _serve(args: argparse.Namespace) -> int:
         bindings=ThreadBindings(state),
         ack_after=settings.ack_after,
         policy=policy,
+        health=watch,
     )
 
     await ricardi.start()

@@ -48,6 +48,13 @@ class Settings:
     # When the audit log is moved aside, and how many generations are kept.
     audit_max_mb: float = 5.0
     audit_keep: int = 5
+    # Where a dead credential is announced. Ricardi has to be a member of
+    # the channel to post into it; empty leaves the log as the only monitor.
+    alert_channel: str = ""
+    # Seconds between credential checks. Zero turns the check off, which is
+    # a decision rather than a default: without it an expired token looks
+    # exactly like a box somebody switched off.
+    health_every: float = 3600.0
 
 
 class ConfigError(Exception):
@@ -152,4 +159,6 @@ def load(path: str | os.PathLike[str]) -> Settings:
         ack_after=float(settings.get("ack_after", 4.0)),
         audit_max_mb=float(settings.get("audit_max_mb", 5.0)),
         audit_keep=int(settings.get("audit_keep", 5)),
+        alert_channel=str(settings.get("alert_channel", "")).strip(),
+        health_every=float(settings.get("health_every", 3600.0)),
     )

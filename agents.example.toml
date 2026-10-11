@@ -14,6 +14,15 @@ ack_after = 4.0
 # Where thread-to-agent bindings and the audit log are kept.
 # state_dir = "./state"
 
+# The credential watch. Ricardi's two halves fail independently: Slack stays
+# connected while Claude Code's credential expires underneath it, so every
+# agent fails and the channel sees nothing at all -- which looks exactly like
+# the box being switched off. Point this at a channel Ricardi is a member of
+# and it says so instead.
+# alert_channel = "C0123456789"
+# Seconds between checks. Zero turns the check off, which is a decision.
+health_every = 3600.0
+
 # One agent per repository, named after the repository.
 #
 # An earlier version of this file split agents by permission instead -- a

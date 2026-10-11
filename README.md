@@ -228,6 +228,11 @@ says so rather than letting a truncated answer read as a finished one.
 `python -m ricardi.report` reads the audit log back: what ran, what was
 refused, and which rule refused it.
 
+Ricardi also watches her own credential, hourly, and says so in a channel when
+it stops working. Slack and Claude Code fail independently, so the half that is
+still up can report the half that is not -- without which an expired token is
+indistinguishable from the box being switched off.
+
 An `announce` obligation posts a command into the thread before it runs. It is a
 **record, not a checkpoint** — nothing waits for a reply and there is no way to
 veto from Slack. It makes use visible, not reversible. The durable version is
