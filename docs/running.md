@@ -51,36 +51,72 @@ cannot fill in. Run a Linux VM on that box instead — a Hyper-V VM set to start
 automatically runs at the host level, so it comes up before anyone logs in and
 stays up after they leave.
 
-## Credentials, which decide most of the above
+## Credentials: pick one, and never sign in on the box
 
 The Agent SDK does not call an API. It spawns the `claude` CLI, which has to be
-signed in, and *where that sign-in is kept* is what makes half the table hard:
+signed in -- so "how does it authenticate" is really "which credential is in
+the environment", and the answer has to be **exactly one**. Two at once is the
+most confusing failure this project has, because the wrong one wins quietly
+and the right one sits there unused.
 
-- **Linux** keeps it in a file under `~/.claude`. A user unit keeps your home,
-  so it is simply there.
-- **macOS** keeps it in the login Keychain. A LaunchDaemon has no login session
-  to unlock, so the Keychain is unreachable. `~/.claude` existing proves
-  nothing.
-- **A Windows service** has no user profile at all unless it logs on as you.
+| Credential | Comes from | Expires | Survives you using Claude Code elsewhere |
+|---|---|---|---|
+| `ANTHROPIC_API_KEY` | the Anthropic Console | when you rotate it | **yes** -- no session to revoke |
+| `CLAUDE_CODE_OAUTH_TOKEN` | `claude setup-token` | undocumented, and silently | mostly |
+| a stored login | `claude`, or `/login` | whenever a refresh fails | **no** -- this is the one that prompts you |
 
-A token sidesteps all three:
+**An always-on host uses one of the first two and never the third.**
+
+### Never run `claude` on the always-on host
+
+A stored login takes precedence over the environment. So if you sign in on the
+box -- or a helpful future you does, to "just check something" -- that login
+shadows the credential in `.env`. Everything keeps working, until the stored
+login's refresh fails some weeks later and Ricardi goes quiet with a perfectly
+good token two feet away. It is the hardest version of this to diagnose,
+because the thing you would go and check looks correct.
+
+So, on the always-on host:
+
+- never run `claude` interactively, never `/login`, never `/logout`
+- `~/.claude/.credentials.json` must not exist; under Docker, `claude-config/`
+  stays empty
+- `install-service.sh` refuses when it finds both, so you hear about it at
+  install time instead of a month later
+
+**What is safe:** `/login` on your own workstation is a different machine with
+its own credential store, and does not reach the service. What *does* reach
+across machines is anything that revokes sessions account-wide -- a password
+change, signing out of claude.ai, an administrator ending sessions. An API key
+is immune to all three, which is why it is the first row of the table.
+
+### Which of the two
+
+**`ANTHROPIC_API_KEY` -- lights out.** No scheduled expiry, and nothing an
+interactive login anywhere can disturb. It bills per token to a Console
+account rather than drawing on a personal subscription, which is also the
+honest answer once more than one person can mention the bot.
+
+**`CLAUDE_CODE_OAUTH_TOKEN` -- stays on your subscription.**
 
 ```bash
 claude setup-token          # needs a browser once, on any machine
 ```
 
-Put it in `.env` as `CLAUDE_CODE_OAUTH_TOKEN` and `chmod 600 .env`. Ricardi
-loads `.env` into its own environment, and the SDK hands its whole environment
-to the CLI it spawns, so nothing else is needed to wire it through.
+Its lifetime is not documented anywhere official -- third-party guides claim
+anything from a few weeks to a year -- and it does not refresh itself. Treat
+the expiry as *unknown* rather than annual: you will hear about it from a
+monitor, not from a calendar. An expired credential and a dead host produce
+the identical symptom, which is no reply at all. See "Watching it" below.
+
+### Either way, it lives in `.env`
+
+`chmod 600 .env`. Ricardi loads `.env` into its own environment and the SDK
+hands its whole environment to the CLI it spawns, so that is the entire wiring.
 
 **Not in a plist, a unit file, or a service command line.**
 `/Library/LaunchDaemons` is world-readable, unit files usually are, and a
-command line shows up in the process list. `.env` in the working directory is
-the one place it belongs.
-
-**It expires in about a year and does not refresh itself.** When it goes,
-Ricardi stops answering and Slack says nothing at all — the same silence as
-being down. Put the date somewhere you actually look.
+command line shows up in the process list.
 
 ## Docker
 
@@ -95,15 +131,27 @@ cp .env.example .env                        # the two Slack tokens
 cp docker/agents.example.toml agents.toml
 cp docker/policy.example.toml policy.toml
 mkdir -p state claude-config workspace
+```
 
-docker compose run --rm login               # sign Claude Code in, once
+Then authenticate **one** of the two ways -- doing both is the trap described
+under "Credentials" above:
+
+```bash
+# Always-on: a credential in .env, nothing stored, nothing to sign into.
 docker compose up -d --build
+
+# Trying it out at a keyboard: sign in once, no credential in .env.
+docker compose run --rm login
+docker compose up -d --build
+
 docker compose logs -f
 ```
 
-Or skip the `login` step and put a `CLAUDE_CODE_OAUTH_TOKEN` in `.env`, which
-is what you want on a headless box: the interactive login needs a TTY to paste
-into, and a container started by a service manager has none.
+`login` writes a stored credential into `claude-config/`, and a stored
+credential beats the environment. Do both and the credential in `.env` is
+decoration until the day that stored login stops refreshing. On an always-on
+box, skip it regardless: the interactive login wants a TTY to paste into,
+which a service manager does not give you.
 
 Both example files use **container** paths, so no host path appears in either
 and the same config works on any machine. `/workspace` is whatever you mount
@@ -165,7 +213,8 @@ sudo ./scripts/install-service.sh --uninstall
 The preflight refuses unless two things are true, both of them things that
 would otherwise fail confusingly at runtime:
 
-**A token.** Required here, not optional — see the Keychain problem above.
+**A credential in `.env`.** Required here, not optional — see the Keychain
+problem above. Either kind will do.
 
 **`claude` in `~/.local/bin`, `/usr/local/bin` or `/opt/homebrew/bin`.** A
 LaunchDaemon starts with a bare `PATH`, so the plist has to name the directory
@@ -268,8 +317,8 @@ forgotten the last hour looks exactly like one that is working.
 - On macOS, `state/launchd-stderr.log` as well: it catches a traceback from
   before logging exists, which is where a bad virtualenv shows up.
 - Slack itself: if Ricardi is down, a mention simply gets no reply. There is no
-  notification, and an expired token looks identical. Worth adding to whatever
-  already watches your other services.
+  notification, and an expired credential looks identical. Worth adding to
+  whatever already watches your other services.
 
 ## Upgrading
 

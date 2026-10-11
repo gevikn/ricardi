@@ -50,7 +50,14 @@ def _stubs(tmp_path: Path, home: Path, kernel: str = "Darwin") -> Path:
     return d
 
 
-def _repo(tmp_path: Path, *, token: bool = True, claude: bool = True) -> tuple[Path, Path]:
+def _repo(
+    tmp_path: Path,
+    *,
+    token: bool = True,
+    claude: bool = True,
+    api_key: bool = False,
+    stored_login: bool = False,
+) -> tuple[Path, Path]:
     root = tmp_path / "repo"
     (root / ".venv" / "bin").mkdir(parents=True)
     (root / "scripts").mkdir()
@@ -62,10 +69,12 @@ def _repo(tmp_path: Path, *, token: bool = True, claude: bool = True) -> tuple[P
     (root / "policy.toml").write_text("")
     # Not a real token: the point is that the script looks for the key and that
     # whatever is there does not end up in a world-readable plist.
-    (root / ".env").write_text(
-        "SLACK_BOT_TOKEN=xoxb-test\n"
-        + ("CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat-NOT-A-REAL-TOKEN\n" if token else "")
-    )
+    lines = ["SLACK_BOT_TOKEN=xoxb-test"]
+    if token:
+        lines.append("CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat-NOT-A-REAL-TOKEN")
+    if api_key:
+        lines.append("ANTHROPIC_API_KEY=sk-ant-api-NOT-A-REAL-KEY")
+    (root / ".env").write_text("\n".join(lines) + "\n")
 
     home = tmp_path / "home"
     if claude:
@@ -75,6 +84,11 @@ def _repo(tmp_path: Path, *, token: bool = True, claude: bool = True) -> tuple[P
         cli.chmod(0o755)
     else:
         home.mkdir()
+    if stored_login:
+        # What `claude` or `/login` leaves behind, and what takes precedence
+        # over anything in .env.
+        (home / ".claude").mkdir(parents=True, exist_ok=True)
+        (home / ".claude" / ".credentials.json").write_text("{}")
     return root, home
 
 
@@ -272,3 +286,44 @@ def test_an_unknown_kernel_says_so_rather_than_guessing(tmp_path):
     assert r.returncode == 2
     assert "Unsupported" in r.stderr
     assert "install-service.ps1" in r.stderr
+
+
+# --- exactly one credential ----------------------------------------------
+# An always-on host has nobody to answer a login prompt, so which credential
+# is in play has to be unambiguous. Two at once is the failure that costs a
+# month: the wrong one wins quietly and the right one looks fine.
+
+
+def test_macos_accepts_an_api_key_instead_of_a_token(tmp_path):
+    # ANTHROPIC_API_KEY has no scheduled expiry and no session for a login
+    # elsewhere to revoke, so it is the better credential for a box nobody
+    # signs into. Either one has to satisfy the preflight.
+    root, home = _repo(tmp_path, token=False, api_key=True)
+    r = _run(root, home, _stubs(tmp_path, home), "--dry-run")
+    assert r.returncode == 0, r.stdout + r.stderr
+    # Same rule as the OAuth token: /Library is world-readable.
+    assert "ANTHROPIC_API_KEY" not in r.stdout
+    assert "NOT-A-REAL-KEY" not in r.stdout
+
+
+def test_it_refuses_a_credential_next_to_a_stored_login(tmp_path):
+    root, home = _repo(tmp_path, token=True, stored_login=True)
+    r = _run(root, home, _stubs(tmp_path, home), "--dry-run")
+    assert r.returncode == 1
+    assert "takes precedence" in r.stdout
+
+
+def test_linux_refuses_a_credential_next_to_a_stored_login(tmp_path):
+    # Likeliest here of anywhere: signing in is the documented Linux path, so
+    # adding a token afterwards is how a box ends up holding both.
+    root, home = _repo(tmp_path, token=True, stored_login=True)
+    r = _run(root, home, _linux(tmp_path, home), "--dry-run")
+    assert r.returncode == 1
+    assert "takes precedence" in r.stdout
+
+
+def test_it_refuses_two_credentials_in_env(tmp_path):
+    root, home = _repo(tmp_path, token=True, api_key=True)
+    r = _run(root, home, _stubs(tmp_path, home), "--dry-run")
+    assert r.returncode == 1
+    assert "conflict" in r.stdout
