@@ -8,6 +8,7 @@ import logging
 
 from ricardi import router
 from ricardi.backends.base import AgentBackend, BackendError, Caller
+from ricardi.health import CredentialWatch
 from ricardi.policy import ClosedPolicy, PolicyPoint, Request, Resource
 from ricardi.store import ThreadBindings
 from ricardi.transports.base import Inbound, Transport
@@ -23,6 +24,7 @@ class Ricardi:
         bindings: ThreadBindings | None = None,
         ack_after: float = 4.0,
         policy: PolicyPoint | None = None,
+        health: CredentialWatch | None = None,
     ):
         self.transport = transport
         self.backend = backend
@@ -30,11 +32,26 @@ class Ricardi:
         self.ack_after = ack_after
         # No policy means nothing is permitted, not everything.
         self.policy = policy or ClosedPolicy("none was configured")
+        # Watches the Claude credential, which fails independently of
+        # Slack. None means nobody is watching it.
+        self.health = health
+        self._watching: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
         await self.transport.start(self.handle)
+        # After the transport, not before: the first check runs straight
+        # away and its alert has nowhere to go until Slack is connected.
+        if self.health is not None:
+            self._watching = asyncio.create_task(self.health.run())
 
     async def close(self) -> None:
+        if self._watching is not None:
+            # Stopped first, so it cannot try to post through a transport
+            # that is already closing.
+            self._watching.cancel()
+            with contextlib.suppress(BaseException):
+                await self._watching
+            self._watching = None
         await self.transport.close()
         await self.backend.close()
 

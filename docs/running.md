@@ -106,7 +106,8 @@ claude setup-token          # needs a browser once, on any machine
 Its lifetime is not documented anywhere official -- third-party guides claim
 anything from a few weeks to a year -- and it does not refresh itself. Treat
 the expiry as *unknown* rather than annual: you will hear about it from a
-monitor, not from a calendar. An expired credential and a dead host produce
+monitor, not from a calendar -- which is what the credential check below is
+for, and why it is on by default. An expired credential and a dead host produce
 the identical symptom, which is no reply at all. See "Watching it" below.
 
 ### Either way, it lives in `.env`
@@ -316,9 +317,66 @@ forgotten the last hour looks exactly like one that is working.
   which is the line you want when reading back weeks later.
 - On macOS, `state/launchd-stderr.log` as well: it catches a traceback from
   before logging exists, which is where a bad virtualenv shows up.
-- Slack itself: if Ricardi is down, a mention simply gets no reply. There is no
-  notification, and an expired credential looks identical. Worth adding to
-  whatever already watches your other services.
+- Slack itself: if Ricardi is down, a mention simply gets no reply, and there
+  is no notification, so this is worth adding to whatever already watches your
+  other services. An expired credential used to look identical from inside a
+  channel; the next section is about closing that one.
+
+## The credential check
+
+Ricardi's two halves fail independently, and that turns out to be useful. Slack
+is a WebSocket this process dials out and keeps. The Claude credential expires
+on a schedule nobody documents. When the credential goes, Slack is still
+perfectly healthy — so the half that works can report the half that does not.
+
+On by default, hourly. Give it a channel and it says so there:
+
+```toml
+[ricardi]
+alert_channel = "C0123456789"   # Ricardi has to be a member of it
+health_every = 3600.0           # seconds between checks; 0 turns it off
+```
+
+It runs one two-word turn in a session of its own, so nothing lands in an
+agent's transcript, and the same tool gate the agents use is installed on it so
+nothing can run. A fraction of a cent an hour.
+
+Nothing short of a real turn would do. `claude --version` does not
+authenticate, the OAuth token's expiry is not readable from the environment
+variable that carries it, and an API key looks identical whether or not it has
+been revoked.
+
+Then, once:
+
+> **I can't reach Claude.** Slack is fine — this is the credential on the box,
+> so every agent will fail until it is dealt with.
+
+with the error, what to do about it, and the reminder not to fix it by signing
+in on the box. And once more when it recovers, with how long it was failing —
+which is the number that says how much of a soak week to throw away.
+
+Three deliberate choices behind that:
+
+- **Three failures before it speaks.** One failed probe is a blip; three is a
+  condition. A monitor that cries wolf gets muted, and a muted monitor reports
+  nothing at all. It retries after a minute while the first failures are
+  unconfirmed, so a real outage is announced in about two minutes rather than
+  three hours.
+- **It speaks even for errors it does not recognise.** Classification only
+  picks the advice — re-issue the credential, top up the account, wait out a
+  rate limit. It never decides whether to alert. A monitor that went quiet
+  because the wording changed upstream would be worse than none, because
+  silence from it reads as reassurance.
+- **No credential reaches the channel.** An authentication error is exactly the
+  kind that quotes back what it was handed, so anything shaped like a token is
+  masked before the message is sent.
+
+A healthy check logs one line, so the last `credential ok` in
+`state/service.log` is both a heartbeat and the time it last authenticated.
+
+With no `alert_channel` set it still logs all of it at `ERROR`, so
+`state/service.log` is the fallback monitor. It will tell you either way; the
+channel just means you do not have to go and look.
 
 ## Upgrading
 

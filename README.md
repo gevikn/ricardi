@@ -115,6 +115,11 @@ docker compose run --rm login     # sign Claude Code in, once
 docker compose up -d --build
 ```
 
+That `login` is the at-a-keyboard path. On a box meant to stay up, put a
+credential in `.env` and skip it: a stored login takes precedence over the
+environment, so holding both is how a working deployment goes quiet weeks
+later. [`docs/running.md`](docs/running.md) has the rule.
+
 No ports are published: Socket Mode dials out, so nothing needs to listen. The
 container is also the only deployment where the agent's reach is enforced by
 something other than a config file — it sees the directory you mounted at
@@ -193,6 +198,11 @@ says so rather than letting a truncated answer read as a finished one.
 
 `python -m ricardi.report` reads the audit log back: what ran, what was
 refused, and which rule refused it.
+
+Ricardi also watches her own credential, hourly, and says so in a channel when
+it stops working. Slack and Claude Code fail independently, so the half that is
+still up can report the half that is not -- without which an expired token is
+indistinguishable from the box being switched off.
 
 An `announce` obligation posts a command into the thread before it runs. It is a
 **record, not a checkpoint** — nothing waits for a reply and there is no way to
