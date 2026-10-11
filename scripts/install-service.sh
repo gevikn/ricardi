@@ -57,8 +57,26 @@ home_of() {
 }
 RUN_HOME="$(home_of "$RUN_USER")"
 
-have_oauth_token() {
-  [ -f "$ROOT/.env" ] && grep -Eq '^[[:space:]]*CLAUDE_CODE_OAUTH_TOKEN=.+' "$ROOT/.env"
+# A credential belongs in .env and nowhere else, so "is there one" is a grep.
+have_env_key() {
+  [ -f "$ROOT/.env" ] && grep -Eq "^[[:space:]]*$1=.+" "$ROOT/.env"
+}
+have_oauth_token() { have_env_key CLAUDE_CODE_OAUTH_TOKEN; }
+have_api_key()     { have_env_key ANTHROPIC_API_KEY; }
+have_credential()  { have_oauth_token || have_api_key; }
+
+# Exactly one credential, or the wrong one wins in silence. A stored login
+# takes precedence over the environment, so a signed-in home on an always-on
+# box shadows whatever is in .env -- and Ricardi then dies whenever that login
+# stops refreshing, weeks later, with a perfectly good token two feet away.
+STORED_LOGIN="$RUN_HOME/.claude/.credentials.json"
+check_one_credential() {
+  if have_credential && [ -f "$STORED_LOGIN" ]; then
+    problems+=("Two credentials: one in .env and a stored login at $STORED_LOGIN. The stored login takes precedence, so the one in .env would be ignored until that login stops refreshing. Keep one -- remove $STORED_LOGIN, or remove the credential from .env.")
+  fi
+  if have_api_key && have_oauth_token; then
+    problems+=("Both ANTHROPIC_API_KEY and CLAUDE_CODE_OAUTH_TOKEN are set in .env. They conflict; keep exactly one.")
+  fi
 }
 
 # --- preflight ----------------------------------------------------------
@@ -73,15 +91,17 @@ check_common() {
   for f in agents.toml policy.toml .env; do
     [ -f "$ROOT/$f" ] || problems+=("Missing $f. Copy the example beside it and fill it in.")
   done
+  check_one_credential
 }
 
 if [ "$OS" = Linux ]; then
   command -v systemctl >/dev/null 2>&1 || problems+=("systemctl not found; this needs systemd.")
   check_common
   # A user unit keeps your home, so Claude Code's own credentials are reachable
-  # and a token is optional here.
-  if [ ! -d "$HOME/.claude" ] && ! have_oauth_token; then
-    problems+=("No $HOME/.claude and no CLAUDE_CODE_OAUTH_TOKEN in .env. Run claude once and sign in.")
+  # and an explicit credential is optional here -- the one platform where
+  # signing in interactively is a legitimate answer.
+  if [ ! -d "$HOME/.claude" ] && ! have_credential; then
+    problems+=("No $HOME/.claude and no credential in .env. Either sign in once with 'claude', or put ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN in .env -- see docs/running.md.")
   fi
 
 elif [ "$OS" = Darwin ]; then
@@ -92,10 +112,10 @@ elif [ "$OS" = Darwin ]; then
   # The one that actually bites. On macOS Claude Code keeps its OAuth token in
   # the login Keychain, and a LaunchDaemon runs outside any login session, so
   # the Keychain is locked and unreachable. ~/.claude existing proves nothing.
-  # A token from 'claude setup-token' is the supported way in, and the SDK
+  # An API key, or a token from 'claude setup-token', is the way in: the SDK
   # hands its whole environment to the CLI it spawns, so .env is enough.
-  if ! have_oauth_token; then
-    problems+=("macOS needs CLAUDE_CODE_OAUTH_TOKEN in .env -- a LaunchDaemon cannot reach your login Keychain, which is where Claude Code keeps credentials on this platform. Run 'claude setup-token' (needs a browser once), put the token in .env, and chmod 600 .env. Not in the plist: /Library is world-readable.")
+  if ! have_credential; then
+    problems+=("macOS needs a credential in .env -- a LaunchDaemon cannot reach your login Keychain, which is where Claude Code keeps credentials on this platform. Use ANTHROPIC_API_KEY from the Anthropic Console, or run 'claude setup-token' (needs a browser once); put it in .env and chmod 600 .env. Not in the plist: /Library is world-readable.")
   fi
   # A LaunchDaemon starts with a bare PATH, so the CLI the SDK spawns has to be
   # findable from one of the directories the plist names below.
