@@ -12,6 +12,10 @@ an agent was mid-way through.
 Nothing listens, in any of these. Socket Mode dials out to Slack, so there is
 no port to publish and none to defend.
 
+This file is about the process. [`remote-access.md`](remote-access.md) is about
+the machine underneath it: bringing a VM up with nobody logged in, and reaching
+it from somewhere else without opening anything.
+
 ## Docker
 
 The shortest path on any host, and the only one where the agent's reach is
