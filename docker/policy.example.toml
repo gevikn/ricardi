@@ -66,12 +66,21 @@ channels = ["C00000000000"]          # the channel id, not its name
 
 # ------------------------------------------------- what the agent may do
 # Reading is the whole point of a question-and-answer agent, and it is the one
-# thing that cannot change anything.
+# thing that cannot change anything. It still has to be bounded. Without
+# `path_under` this rule reaches every file the process can open -- /etc/shadow,
+# ~/.ssh, and the agent's own credentials under /config/claude -- and the denies
+# at the bottom of this file are a backstop for the paths someone thought of,
+# not a boundary.
+#
+# A tool that names no path at all -- `Grep` with a pattern and no `path` --
+# cannot satisfy this rule and is denied. That is the right way round, and it is
+# worth a line in the agent's system prompt: always name a path.
 [[rule]]
-name    = "read anything in the repo"
-effect  = "allow"
-actions = ["tool"]
-tools   = ["Read", "Grep", "Glob", "NotebookRead"]
+name       = "read anything under the workspace"
+effect     = "allow"
+actions    = ["tool"]
+tools      = ["Read", "Grep", "Glob", "NotebookRead"]
+path_under = "/workspace"
 
 # Writing is confined by path. Point this at a worktree you would not mind
 # losing, so the containment is structural and this rule is the second line
@@ -137,14 +146,51 @@ command_matches = [
 
 # Secrets are not read or written, by any tool, even inside an allowed path.
 # Two rules because a shell command and a file path are different shapes.
+#
+# Write these wider than looks necessary. A pattern only catches the spelling
+# you thought of: `*id_rsa*` misses `id_ed25519`, and `*/credentials*` misses
+# `/.credentials.json`, because the leading dot is part of the name. Both of
+# those were real holes here. Match the directory as well as the filename.
 [[rule]]
 name         = "no credential files, whichever tool asks"
 effect       = "deny"
 actions      = ["tool"]
-path_matches = ["*/.env", "*/.env.*", "*id_rsa*", "*/credentials*", "*/.aws/*"]
+path_matches = [
+  "*/.env",
+  "*/.env.*",
+  "*/.ssh/*",
+  "*id_rsa*",
+  "*id_dsa*",
+  "*id_ecdsa*",
+  "*id_ed25519*",
+  "*credential*",          # covers credentials, .credentials.json, .git-credentials
+  "*/.aws/*",
+  "*/.gh/*",
+  "*/.config/gh/*",
+  "*/.claude/*",
+  "/config/claude/*",      # where compose.yaml mounts this agent's own login
+  "*/.netrc",
+  "*.pem",
+  "*.pfx",
+  "*.p12",
+]
 
 [[rule]]
 name            = "nor by shelling out to read them"
 effect          = "deny"
 actions         = ["tool"]
-command_matches = ["*.env*", "*id_rsa*", "*credentials*", "*.aws*"]
+command_matches = [
+  "*.env*",
+  "*.ssh*",
+  "*id_rsa*",
+  "*id_dsa*",
+  "*id_ecdsa*",
+  "*id_ed25519*",
+  "*credential*",
+  "*.aws*",
+  "*.gh/*",
+  "*.claude*",
+  "*.netrc*",
+  "*.pem*",
+  "*.pfx*",
+]

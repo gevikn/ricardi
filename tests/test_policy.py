@@ -237,11 +237,16 @@ def test_the_shipped_example_loads_and_denies_the_obvious_things():
         return P.Request(action="tool", principal=me, resource=here, agent="scout",
                          tool=name, tool_input=ti)
 
-    assert asyncio.run(decide(t("Read", file_path="/repo/main.py"))).allow is True
+    assert asyncio.run(
+        decide(t("Read", file_path="~/experiments/shared-repo/main.py"))
+    ).allow is True
     assert asyncio.run(decide(t("Bash", command="pytest -q"))).allow is True
     assert asyncio.run(decide(t("Bash", command="git push origin main"))).allow is False
     assert asyncio.run(decide(t("Bash", command="rm -rf /"))).allow is False
     assert asyncio.run(decide(t("Read", file_path="/repo/.env"))).allow is False
+    # Reading is bounded by path, not merely by the deny list below it: a file
+    # nobody thought to name is still outside the worktree, so still refused.
+    assert asyncio.run(decide(t("Read", file_path="/repo/main.py"))).allow is False
     # An announced command carries the obligation that makes it visible.
     assert "announce" in asyncio.run(decide(t("Bash", command="pytest -q"))).obligations
 
@@ -348,3 +353,58 @@ def test_the_shipped_example_uses_the_alias_not_a_platform_name():
     body = io.open("policy.example.toml", encoding="utf-8").read()
     assert 'tools           = ["shell"]' in body
     assert '"PowerShell"' not in body
+
+
+# The credential paths that this example used to hand out. Each one was
+# reachable because "read anything in the repo" named no path_under, and the
+# deny list missed them: `*id_rsa*` does not match `id_ed25519`, and
+# `*/credentials*` does not match `/.credentials.json`. Both layers are tested
+# here, because either one alone would be a single point of failure.
+EXPOSED_BEFORE = [
+    "~/.claude/.credentials.json",
+    "~/.ssh/id_ed25519",
+    "~/.ssh/id_rsa",
+    "~/.aws/credentials",
+    "~/.gh/hosts.yml",
+    "~/.netrc",
+    "/etc/shadow",
+    "~/experiments/shared-repo/deploy.pem",
+]
+
+
+@pytest.mark.parametrize("path", EXPOSED_BEFORE)
+@pytest.mark.parametrize("policy_file", ["policy.example.toml", "docker/policy.example.toml"])
+def test_neither_example_hands_out_a_credential_file(policy_file, path):
+    import asyncio
+
+    pol = P.load(policy_file)
+    req = P.Request(
+        action="tool",
+        principal=P.Principal(id="U11111111111", email="them@example.com", known=True),
+        resource=P.Resource(channel_id="C00000000000"),
+        agent="scout",
+        tool="Read",
+        tool_input={"file_path": path},
+    )
+    assert asyncio.run(pol.decide(req)).allow is False, path
+
+
+@pytest.mark.parametrize("policy_file", ["policy.example.toml", "docker/policy.example.toml"])
+def test_neither_example_lets_a_search_run_from_the_root(policy_file):
+    """`Grep` with no path cannot satisfy path_under, and must fail closed."""
+    import asyncio
+
+    pol = P.load(policy_file)
+
+    def grep(**ti):
+        return P.Request(
+            action="tool",
+            principal=P.Principal(id="U11111111111", email="them@example.com", known=True),
+            resource=P.Resource(channel_id="C00000000000"),
+            agent="scout",
+            tool="Grep",
+            tool_input=ti,
+        )
+
+    assert asyncio.run(pol.decide(grep(pattern="sk-ant", path="/"))).allow is False
+    assert asyncio.run(pol.decide(grep(pattern="sk-ant"))).allow is False
