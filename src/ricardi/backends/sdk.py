@@ -227,6 +227,7 @@ class SdkBackend(AgentBackend):
                 agent=live.spec.name,
                 tool=tool,
                 tool_input=dict(tool_input or {}),
+                flags=caller.flags,
             )
             try:
                 decision = await self._policy.decide(request)

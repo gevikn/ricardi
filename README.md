@@ -15,6 +15,22 @@ ways.
 Once a thread is talking to an agent, replying in the thread is enough — no
 mention needed.
 
+A request can give something up on the way in:
+
+```
+@ricardi -ro tell scout what does the policy engine do
+@ricardi -dry tell deployer to ship PR 412 to stage
+```
+
+`-ro` refuses every tool that could change anything; `-dry` lets it plan and
+say what it would have run. **A flag only ever subtracts** — it narrows what
+policy already allows you, and no flag can grant anything. That is what makes
+it safe to add more of them.
+
+A flag sticks to the thread rather than the message. You can open a thread
+`-ro` and walk away, and it still holds when a collaborator replies without
+repeating it.
+
 ## How it fits together
 
 Two seams, so neither end knows about the other:

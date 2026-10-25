@@ -57,6 +57,17 @@ class Ricardi:
             await self._say(inbound, router.HELP)
             return
 
+        if command.kind == "bad_flag":
+            # Refused rather than ignored: every flag takes something away, so
+            # a dropped one runs what the person was trying to prevent.
+            known = ", ".join(f"`-{f}`" for f in sorted(router.FLAGS))
+            await self._refuse(
+                inbound,
+                f"I don't know the flag `-{command.text}`, and I won't guess "
+                f"at a restriction. I understand {known}.",
+            )
+            return
+
         if command.kind == "list":
             # The catalogue names the agents and what they can touch, so it is
             # worth gating rather than handing to anyone who asks.
@@ -81,7 +92,7 @@ class Ricardi:
             # thread quietly pointed at an agent it may not use.
             if not await self._permit(inbound, "ask", agent):
                 return
-            self.bindings.bind(inbound.thread, agent)
+            self.bindings.bind(inbound.thread, agent, command.flags)
             if not command.text:
                 await self._say(
                     inbound,
@@ -102,6 +113,8 @@ class Ricardi:
             return
         if not await self._permit(inbound, "ask", bound):
             return
+        # A reply may narrow the thread further; it can never widen it.
+        self.bindings.bind(inbound.thread, bound, command.flags)
         await self._relay(inbound, bound, command.text)
 
     async def _permit(self, inbound: Inbound, action: str, agent: str = "") -> bool:
@@ -166,6 +179,9 @@ class Ricardi:
             principal=self._principal(inbound),
             resource=Resource(channel_id=inbound.channel),
             notice=notice,
+            # From the thread, not from this message: a flag someone set on
+            # the way in holds for whoever replies next.
+            flags=self.bindings.flags(inbound.thread),
         )
         task = asyncio.create_task(self.backend.ask(agent, text, caller))
         try:

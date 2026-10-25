@@ -25,6 +25,19 @@ _LIST = re.compile(
 _HELP = re.compile(r"^(?:help|\?)\s*$", re.IGNORECASE)
 _WHO = re.compile(r"^who(?:\s+is\s+this|\s*\?)?\s*$", re.IGNORECASE)
 
+# A leading "-ro". Only at the very front, and only whole words, so a hyphen
+# anywhere in the message -- "pytest --cov -x", "the -ro flag" -- is text.
+_FLAG = re.compile(r"^-(?P<name>[A-Za-z]+)(?=\s|$)\s*")
+
+# Every flag takes something away and none adds anything. That is the whole
+# contract: an unrecognised flag can only ever have meant to restrict, so it is
+# refused rather than dropped -- dropping it would run what the person was
+# trying to prevent.
+FLAGS = {
+    "ro": "no tool that could change anything, whatever policy allows",
+    "dry": "say what it would run, run nothing",
+}
+
 
 @dataclass(frozen=True)
 class Command:
@@ -38,35 +51,62 @@ class Command:
     kind: str
     agent: str = ""
     text: str = ""
+    # Sorted, so two spellings of the same request compare and store alike.
+    flags: tuple[str, ...] = ()
 
 
 def parse(message: str) -> Command:
     text = (message or "").strip()
     if not text:
         return Command(kind="empty")
+
+    flags: set[str] = set()
+    while True:
+        m = _FLAG.match(text)
+        if not m:
+            break
+        name = m.group("name").lower()
+        if name not in FLAGS:
+            return Command(
+                kind="bad_flag",
+                text=name,
+                flags=tuple(sorted(flags)),
+            )
+        flags.add(name)
+        text = text[m.end():].lstrip()
+    found = tuple(sorted(flags))
+
+    if found and not text:
+        # "-ro" alone restricts nothing, because there is nothing to restrict.
+        return Command(kind="empty", flags=found)
     if _HELP.match(text):
-        return Command(kind="help")
+        return Command(kind="help", flags=found)
     if _LIST.match(text):
-        return Command(kind="list")
+        return Command(kind="list", flags=found)
     if _WHO.match(text):
-        return Command(kind="who")
+        return Command(kind="who", flags=found)
 
     m = _TELL.match(text)
     if m:
         body = m.group("text").strip()
         # "tell me the agents" is a listing, not an agent called "me".
         if m.group("agent").lower() in {"me", "us"} and _LIST.match(body):
-            return Command(kind="list")
+            return Command(kind="list", flags=found)
         if body:
-            return Command(kind="tell", agent=m.group("agent"), text=body)
+            return Command(kind="tell", agent=m.group("agent"), text=body, flags=found)
         # "tell scout" with nothing to say is a request to talk to scout.
-        return Command(kind="tell", agent=m.group("agent"), text="")
+        return Command(kind="tell", agent=m.group("agent"), text="", flags=found)
 
     m = _COLON.match(text)
     if m:
-        return Command(kind="tell", agent=m.group("agent"), text=m.group("text").strip())
+        return Command(
+            kind="tell",
+            agent=m.group("agent"),
+            text=m.group("text").strip(),
+            flags=found,
+        )
 
-    return Command(kind="say", text=text)
+    return Command(kind="say", text=text, flags=found)
 
 
 HELP = (
@@ -76,5 +116,8 @@ HELP = (
     "- `<agent>: <message>` - the same thing, shorter\n"
     "- `who` - which agent this thread is talking to\n"
     "Once a thread is talking to an agent, just reply in the thread and I pass "
-    "it along."
+    "it along.\n\n"
+    "Flags go first, and only ever take something away:\n"
+    + "\n".join(f"- `-{name}` - {why}" for name, why in sorted(FLAGS.items()))
+    + "\nA flag sticks to the thread, so it still holds when someone else replies."
 )

@@ -21,6 +21,9 @@ class Caller:
     principal: Principal = Principal()
     resource: Resource = Resource()
     notice: Callable[[str], Awaitable[None]] | None = None
+    # What the thread gave up. Carried here because a tool decision happens
+    # deep inside a turn, long after the message that asked for it.
+    flags: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
