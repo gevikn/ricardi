@@ -9,7 +9,7 @@ ways.
 
 ```
 @ricardi list agents
-@ricardi tell deployer to ship PR 412 to stage
+@ricardi tell shared to summarise what changed this week
 ```
 
 Once a thread is talking to an agent, replying in the thread is enough — no
@@ -18,8 +18,8 @@ mention needed.
 A request can give something up on the way in:
 
 ```
-@ricardi -ro tell scout what does the policy engine do
-@ricardi -dry tell deployer to ship PR 412 to stage
+@ricardi -ro tell shared what does the policy engine do
+@ricardi -dry tell shared to fix the failing backup test
 ```
 
 `-ro` refuses every tool that could change anything; `-dry` lets it plan and
@@ -79,7 +79,7 @@ cp policy.example.toml policy.toml
 
 # The example agents work in scratch directories, which is the habit worth
 # keeping. Create them, or edit the cwd values to point somewhere you have.
-mkdir -p ~/experiments/shared-repo ~/experiments/bench
+mkdir -p ~/repos/shared
 
 python -m ricardi.cli --transport local --backend fake --port 8809
 ```
@@ -89,7 +89,7 @@ Then drive it:
 ```bash
 curl -s localhost:8809/health
 curl -s -XPOST localhost:8809/say -d '{"text":"list agents","thread":"T1"}'
-curl -s -XPOST localhost:8809/say -d '{"text":"tell scout to read README.md","thread":"T1"}'
+curl -s -XPOST localhost:8809/say -d '{"text":"tell shared to read README.md","thread":"T1"}'
 curl -s localhost:8809/replies
 ```
 

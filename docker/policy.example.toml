@@ -5,7 +5,17 @@
 #
 # A rule matches when every dimension it names matches. Dimensions it leaves
 # out match everything, so a rule with only `tools` applies to every user,
-# channel and agent.
+# channel and agent. That is the thing to be careful about here: a rule that
+# forgets to say who it is for grants more than it looks like it grants.
+#
+# Agents are repositories (see agents.example.toml), so `agents` in a rule
+# means "in this checkout". Rules that grant change are written per repo for
+# that reason -- "who may alter what, and where" reads off the file directly.
+#
+# None of this is the only line of defence. A person who wants to be sure
+# nothing changes on a particular request says so when they ask, with `-ro`;
+# `-dry` stops before running anything. Those subtract from whatever is below
+# and can never add to it.
 
 # ---------------------------------------------------------------- the ceiling
 # How many turns one person may start. Each one spends money on this machine's
@@ -55,14 +65,15 @@ actions  = ["ask", "list"]
 users    = ["you@example.com", "them@example.com"]
 channels = ["C00000000000"]          # the channel id, not its name
 
-# Narrow a single agent to fewer people by naming it. Without a rule like this
-# everyone above can reach every agent.
+# Reaching a second repository is a second rule. Without one, everyone named
+# above can address every agent in the catalogue.
 # [[rule]]
-# name     = "only one of us drives bench"
-# effect   = "deny"
+# name     = "only one of us works on utils"
+# effect   = "allow"
 # actions  = ["ask"]
-# agents   = ["bench"]
-# users    = ["them@example.com"]
+# agents   = ["utils"]
+# users    = ["you@example.com"]
+# channels = ["C00000000000"]
 
 # ------------------------------------------------- what the agent may do
 # Reading is the whole point of a question-and-answer agent, and it is the one
@@ -82,15 +93,22 @@ actions    = ["tool"]
 tools      = ["Read", "Grep", "Glob", "NotebookRead"]
 path_under = "/workspace"
 
-# Writing is confined by path. Point this at a worktree you would not mind
-# losing, so the containment is structural and this rule is the second line
-# rather than the only one.
+# Writing is confined three ways: to the people who agreed to it, to one
+# repository, and to a path inside it. `users` is the one that used to be
+# missing, and its absence meant this applied to everybody in every channel.
+#
+# `path_under` is still worth setting even though `agents` already pins the
+# checkout: it is what stops a relative path or a symlink walking out of it.
+# Mount that path read-only if the repository is one you would mind losing --
+# policy is a decision, not a filesystem.
 [[rule]]
-name       = "write only inside the shared experiment worktree"
+name       = "ricardi: the two of us may change this checkout"
 effect     = "allow"
 actions    = ["tool"]
+agents     = ["ricardi"]
+users      = ["you@example.com", "them@example.com"]
 tools      = ["Write", "Edit", "NotebookEdit"]
-path_under = "/workspace/bench"
+path_under = "/workspace/ricardi"
 
 # Running things is where you and the other engineer have to actually agree.
 # Every allowed command announces itself in the thread before it runs, so the
@@ -99,9 +117,11 @@ path_under = "/workspace/bench"
 # and WSL, PowerShell on Windows. Naming one of them directly covers nothing on
 # the other, which is a quiet way to end up with no rule at all.
 [[rule]]
-name            = "experiments may be run, and are announced"
+name            = "ricardi: commands may be run here, and are announced"
 effect          = "allow"
 actions         = ["tool"]
+agents          = ["ricardi"]
+users           = ["you@example.com", "them@example.com"]
 tools           = ["shell"]
 obligations     = ["announce"]
 command_matches = [
@@ -122,8 +142,11 @@ command_matches = [
 
 # Deny wins over any allow above, whoever asks. These are the honest mistakes
 # worth catching -- not a security boundary, because no list of command
-# patterns survives $(...), pipes or a base64 payload. The boundary is the
-# worktree, the sandbox and the absence of push credentials.
+# patterns survives $(...), pipes or a base64 payload. The allow patterns above
+# are prefix-shaped, so "ls *" matches "ls -a && something-else" -- which is
+# exactly why every pattern here is wrapped in stars on both sides, and why
+# deny wins. The boundary is the checkout, the container and the absence of
+# push credentials.
 # No `tools` here on purpose: a deny that names one shell would miss the other,
 # and missing a deny is worse than missing an allow. Without it this matches any
 # tool whose input carries a command.

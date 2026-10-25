@@ -2,20 +2,31 @@
 
 Opinions from using it, in rough order of how much trouble they save.
 
-## Start read-only and stay there longer than feels necessary
+## Start with no write rules and stay there longer than feels necessary
 
-A `scout` that can only `Read`, `Grep` and `Glob` answers most of what two
+An agent that can only `Read`, `Grep` and `Glob` answers most of what two
 engineers actually ask each other, and the worst thing a bug in it can do is
 say something wrong. Most teams who reach for a write-capable agent on day one
 did not need one on day one.
 
-Add `bench` when you have a specific experiment you keep wanting to run, not in
-anticipation.
+Add the `Write`/`Edit` rule when you have something specific you keep wanting
+to do, not in anticipation.
 
-## Give each agent a worktree it can afford to lose
+Note what this is *not*: an agent named "read-only". Agents are repositories
+here, because which repository someone means is knowable before they ask and
+whether their question needs to write is not. "Summarise what this repo does"
+sounds read-only and needs `ls`, `cat` and `git log`. Permission belongs in
+policy, where it can depend on who is asking.
+
+Per request, `-ro` is the brake — `@ricardi -ro tell shared what does this do`
+refuses every tool that could change anything, whatever policy allows. It
+subtracts and can never add, and it sticks to the thread, so it still holds
+when a collaborator replies without repeating it.
+
+## Give each repository a checkout it can afford to lose
 
 ```bash
-git worktree add ~/experiments/bench -b experiments
+git worktree add ~/repos/shared -b shared
 ```
 
 No push credentials in it. Then "do not push to main" is not a rule anyone has
@@ -23,18 +34,25 @@ to enforce — it is a thing that cannot happen. Policy is the second line and
 should never be the only one.
 
 This matters more than any rule you will write. A tight policy over `~/` is
-worse than a loose policy over a scratch directory.
+worse than a loose policy over a checkout you could delete. In the container,
+mount a repository you would mind losing read-only and let the filesystem say
+no, rather than asking `path_under` to be the only thing standing there.
 
 ## Review policy.toml the way you review IAM
 
 It is the file that grants everything. Three habits:
 
-- **One change per PR.** "Added bench and also widened the shell rules" is how
+- **One change per PR.** "Added a repo and also widened the shell rules" is how
   a widening gets merged because the feature looked fine.
 - **Read deny rules first.** They are what stands between an honest mistake and
   a bad afternoon.
 - **Name every rule.** The name lands in the audit log, and `rule: ""` at 2am
-  tells you nothing.
+  tells you nothing. Prefix it with the repository when it is scoped to one.
+- **Check what each granting rule leaves out.** A dimension a rule does not
+  name matches everything, so a rule that grants `shell` without `users` or
+  `agents` grants it to everyone, everywhere, in every repository. That is the
+  correct TOML default and the wrong security default; it has already caught
+  us once.
 
 ## Prefer narrow allows over clever denies
 
