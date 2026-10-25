@@ -30,6 +30,12 @@ on:
 
 # One deploy at a time. Two interleaved rebuilds of the same compose project
 # is how you end up with a container running an image nobody can name.
+# Only what the test gate needs: read the tests workflow's conclusion on a
+# commit. Nothing here writes to the repository.
+permissions:
+  contents: read
+  actions: read
+
 concurrency:
   group: deploy-ricardi
   cancel-in-progress: false

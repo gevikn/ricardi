@@ -34,26 +34,65 @@ And one that matters for a private repository: self-hosted runners do not
 consume GitHub Actions minutes. Building a Docker image on a hosted runner for
 a private repo does.
 
-## The security condition, which is not a footnote
+## Going public, with the runner still attached
 
-**A self-hosted runner executes whatever the triggering workflow file says, as
-the runner's user.** Not the workflow on `main` — the one on the ref being run.
+The received wisdom is that a self-hosted runner and a public repository do not
+mix, and GitHub's own documentation says they should "almost never" be
+combined. That is sound advice aimed at the common mistake, which is attaching
+a runner and then letting fork pull requests reach it. The danger is specific
+rather than general, so the rule here is specific too.
 
-For a private repository whose collaborators you would hand a shell to anyway,
-that is an acceptable trade and the normal way these are used. For a public
-one it is not: a pull request from a fork brings its own workflow file, and it
-would run on this machine.
+**A self-hosted runner executes whatever the *triggering* workflow file says**
+-- not the one on `main`, the one on the ref being run -- as the runner's user.
+That is fine while every trigger that can reach it comes from someone with
+write access. A `pull_request` from a fork does not.
 
-So, written down because it will be easy to forget in a year:
+So the rule, and it is the only one that matters:
 
-> **If this repository is ever made public, detach the runner first.**
+> **No fork-triggerable event may ever name a self-hosted runner.**
 
-The runner runs as `ricardi`, which is in the `docker` group — which is
-root-equivalent on this host. A dedicated unprivileged user with a narrow
-sudoers rule for `docker compose` would be tighter. It is not what is set up
-today, and the reason is honest rather than principled: `ricardi` already owns
-the deployment directory and already holds the deploy key, so using it needed
-no new credential.
+Which splits the work by trust, not by habit:
+
+| Trigger | Who can cause it | Runner |
+|---|---|---|
+| `pull_request` | anyone | GitHub-hosted |
+| `push`, `workflow_dispatch`, `release`, `schedule` | write access only | self-hosted, fine |
+
+This repository is already shaped that way. `tests.yml` runs on hosted runners;
+`deploy.yml` is `workflow_dispatch` only. Going public needs no change to
+either -- which is the point of having checked.
+
+`tests/test_workflow_trust.py` enforces it rather than trusting anyone to
+remember. Wire a fork-triggerable event to `[self-hosted, ricardi-home]` and
+the suite fails, naming the file, the job and the event.
+
+**Do not rely on fork-PR approval settings.** The "first-time contributor"
+exemption lets anyone through once they have had a single commit merged, so an
+attacker lands a typo fix, waits, and sends the real payload. Approval is also
+a human reading a diff, and a workflow change inside an otherwise sensible pull
+request is exactly what gets approved. Treat it as a speed bump, never as the
+control.
+
+**Never add `pull_request_target`.** It runs with this repository's secrets;
+checking out the fork's head under it is the "pwn request" pattern. The guard
+flags it wherever it appears, including on hosted runners.
+
+One more thing that changes on the day you go public: **GitHub-hosted runners
+are free for public repositories**, so the cost argument for self-hosting
+*tests* disappears at exactly the moment self-hosting them would become
+dangerous. Deployment stays self-hosted, because it must run on the box.
+
+### The honest part
+
+The runner runs as `ricardi`, which is in the `docker` group -- root-equivalent
+on this host. A dedicated unprivileged user with a narrow sudoers rule for
+`docker compose` would be tighter. It is not what is set up here, and the
+reason is convenience rather than principle: `ricardi` already owns the
+deployment directory and already holds the deploy key, so using it needed no
+new credential. Anyone with write access to this repository can dispatch a
+workflow and therefore run commands as that user. That is the same trust as
+handing them a shell on the box, which is the right mental model for who gets
+write access.
 
 ## What the deploy job actually does
 
