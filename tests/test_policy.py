@@ -234,7 +234,7 @@ def test_the_shipped_example_loads_and_denies_the_obvious_things():
     here = P.Resource(channel_id="C00000000000")
 
     def t(name, **ti):
-        return P.Request(action="tool", principal=me, resource=here, agent="scout",
+        return P.Request(action="tool", principal=me, resource=here, agent="shared",
                          tool=name, tool_input=ti)
 
     assert asyncio.run(
@@ -249,6 +249,26 @@ def test_the_shipped_example_loads_and_denies_the_obvious_things():
     assert asyncio.run(decide(t("Read", file_path="/repo/main.py"))).allow is False
     # An announced command carries the obligation that makes it visible.
     assert "announce" in asyncio.run(decide(t("Bash", command="pytest -q"))).obligations
+
+    # The rules that grant change say who and where. A rule that forgot either
+    # would grant far more than it reads as granting, so both are asserted.
+    def elsewhere(name, **ti):
+        return P.Request(action="tool", principal=me, resource=here, agent="other",
+                         tool=name, tool_input=ti)
+
+    def stranger(name, **ti):
+        return P.Request(
+            action="tool",
+            principal=P.Principal(id="U99999999999", email="nobody@example.com"),
+            resource=here, agent="shared", tool=name, tool_input=ti,
+        )
+
+    assert asyncio.run(decide(elsewhere("Bash", command="pytest -q"))).allow is False
+    assert asyncio.run(decide(elsewhere("Write", file_path="/repo/x"))).allow is False
+    assert asyncio.run(decide(stranger("Bash", command="pytest -q"))).allow is False
+    assert asyncio.run(decide(stranger("Write", file_path="/repo/x"))).allow is False
+    # Reading stays open to everyone the roster knows: it changes nothing.
+    assert asyncio.run(decide(elsewhere("Read", file_path="/repo/main.py"))).allow is True
 
 
 def test_the_example_lets_the_listed_people_ask_in_the_listed_channel():
@@ -305,7 +325,7 @@ def test_the_shipped_example_permits_and_forbids_the_same_things_on_both_shells(
     def t(name, command):
         return P.Request(
             action="tool", principal=me, resource=P.Resource(channel_id="C00000000000"),
-            agent="scout", tool=name, tool_input={"command": command},
+            agent="shared", tool=name, tool_input={"command": command},
         )
 
     for shell in ("Bash", "PowerShell"):

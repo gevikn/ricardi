@@ -14,39 +14,48 @@ ack_after = 4.0
 # Where thread-to-agent bindings and the audit log are kept.
 # state_dir = "./state"
 
-# Reading is the safe default and answers most questions. Start here, and add
-# a second agent only when you actually need one that writes.
+# One agent per repository, named after the repository.
+#
+# An earlier version of this file split agents by permission instead -- a
+# read-only one and a writing one -- and that was the wrong axis. Whether a
+# question needs to write is not something the asker knows: "summarise what
+# this repo does" sounds read-only and needs `ls`, `cat` and `git log`. Which
+# repository they mean is something they do know, before they type anything.
+#
+# So the agent carries what is knowable in advance -- the checkout and the
+# budget -- and policy.toml decides who may change what. Anyone who wants to
+# guarantee nothing changes says so per request, with `-ro`.
+#
+# Point `cwd` at a checkout with no push credentials, so what it can reach is
+# decided by the filesystem and not only by policy. For example:
+#
+#   git worktree add ~/repos/shared -b shared
+#
 [[agent]]
-name = "scout"
+name = "shared"
+description = "the repository we are both working in"
 # Ceilings the SDK enforces on every turn. On a machine left running, "no
-# limit" should be something you chose rather than something you forgot.
-max_budget_usd = 0.50
-max_turns = 30
-description = "reads the repo and answers questions"
-cwd = "~/experiments/shared-repo"
-system_prompt = """
-You answer questions about this repository for a Slack channel with two
-engineers in it. Be brief: two or three sentences unless asked for more.
-Say plainly when you do not know rather than guessing.
-"""
-
-# Runs experiments. Point its cwd at a scratch worktree with no push
-# credentials, so what it can reach is decided by the filesystem and not only
-# by policy. Create it first, for example:
-#
-#   git worktree add ~/experiments/bench -b experiments
-#
-[[agent]]
-name = "bench"
-# Experiments take more steps than questions, and cost more. Both numbers are
-# per turn, not per day.
+# limit" should be something you chose rather than something you forgot. Both
+# numbers are per turn, not per day.
 max_budget_usd = 2.00
 max_turns = 60
-description = "tries things out in the experiment worktree and reports back"
-cwd = "~/experiments/bench"
+cwd = "~/repos/shared"
 system_prompt = """
-You run experiments for a Slack channel with two engineers in it: write a small
-script or test, run it, and report what happened in two or three sentences.
-Everything you do stays inside this directory. If something you need is not
+You work on this repository for a Slack channel with a few engineers in it.
+Be brief: two or three sentences unless asked for more. Say plainly when you
+do not know rather than guessing.
+
+Everything you do stays inside this checkout. If something you need is not
 permitted, say so and stop rather than looking for another way around.
 """
+
+# A second repository is a second block. Nothing else changes: a name, a
+# checkout, a budget. Who may reach it, and who may change it, are rules in
+# policy.toml keyed on this name.
+#
+# [[agent]]
+# name = "utils"
+# description = "the scripts repo"
+# max_budget_usd = 1.00
+# max_turns = 40
+# cwd = "~/repos/utils"
