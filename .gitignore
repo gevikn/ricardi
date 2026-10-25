@@ -12,3 +12,9 @@ policy.toml
 smoke/
 smoke.log
 *.log
+
+# Runtime directories the compose file mounts. claude-config/ holds live
+# credentials whenever a stored login is used; workspace/ holds whole
+# checkouts. Neither belongs in the history.
+claude-config/
+workspace/

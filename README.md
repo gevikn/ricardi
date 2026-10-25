@@ -106,14 +106,18 @@ root never lands.
 ## Deploying it
 
 ```bash
-cp .env.example .env
+cp .env.example .env              # Slack tokens, and a credential for Claude
 cp docker/agents.example.toml agents.toml
 cp docker/policy.example.toml policy.toml
 mkdir -p state claude-config workspace
 
-docker compose run --rm login     # sign Claude Code in, once
 docker compose up -d --build
 ```
+
+That assumes an `ANTHROPIC_API_KEY` in `.env`, which is what a box left running
+wants: it expires when you rotate it rather than on a clock you cannot see. To
+use a subscription login instead — and why not to use both — see
+[`docs/running.md`](docs/running.md).
 
 No ports are published: Socket Mode dials out, so nothing needs to listen. The
 container is also the only deployment where the agent's reach is enforced by

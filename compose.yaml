@@ -1,11 +1,13 @@
 # Ricardi, containerised.
 #
-#   cp .env.example .env                       # the two Slack tokens
+#   cp .env.example .env                       # Slack tokens + ANTHROPIC_API_KEY
 #   cp docker/agents.example.toml agents.toml
 #   cp docker/policy.example.toml policy.toml
 #   mkdir -p state claude-config workspace
-#   docker compose run --rm login              # sign Claude Code in, once
 #   docker compose up -d --build
+#
+# That uses the API key from .env. For a subscription login instead, see
+# docs/running.md -- and do not configure both.
 #
 # No ports. Socket Mode dials out, so nothing needs to listen and nothing is
 # published -- which is most of the reason this deployment is simple.
