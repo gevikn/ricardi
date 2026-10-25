@@ -1,0 +1,170 @@
+# Deploying to the box, from anywhere with `gh` and no session on the box.
+#
+#   gh workflow run deploy.yml -f ref=main
+#   gh run watch
+#
+# It runs on a self-hosted runner *on* the box, which matters for two reasons
+# beyond cost. The runner dials out to GitHub, so this needs no inbound port --
+# the same shape as Socket Mode and the cloudflared tunnel, and the reason this
+# works at all on a machine behind a home router. And the image is built where
+# it is used, so there is no registry in the path and the layer cache survives
+# between deploys.
+#
+# SECURITY, and it is not a footnote: a self-hosted runner executes whatever
+# the triggering workflow file says, as the runner's user. That is fine for a
+# private repository whose collaborators you would hand a shell to anyway. It
+# is NOT fine for a public one -- a pull request from a fork would run on this
+# machine. If this repository is ever made public, detach the runner first.
+name: deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch, tag or SHA to deploy"
+        default: main
+      skip_test_gate:
+        description: "Deploy even if tests did not pass on that commit"
+        type: boolean
+        default: false
+
+# One deploy at a time. Two interleaved rebuilds of the same compose project
+# is how you end up with a container running an image nobody can name.
+concurrency:
+  group: deploy-ricardi
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, ricardi-home]
+    env:
+      DEPLOY_DIR: /opt/ricardi
+      GH_TOKEN: ${{ github.token }}
+      TARGET_REF: ${{ inputs.ref }}
+
+    steps:
+      # No actions/checkout. The deployment directory IS the working copy, and
+      # it holds the things that must not be replaced: .env, policy.toml,
+      # agents.toml and state/ are all untracked and all irreplaceable.
+      - name: Fetch, and say what we are about to deploy
+        id: target
+        run: |
+          set -euo pipefail
+          cd "$DEPLOY_DIR"
+          git fetch --prune origin
+          sha=$(git rev-parse --verify "origin/${TARGET_REF}^{commit}" 2>/dev/null \
+                || git rev-parse --verify "${TARGET_REF}^{commit}")
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "was=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "Deploying $sha"
+          git log --oneline -1 "$sha"
+
+      - name: Require that the tests passed on that exact commit
+        if: ${{ !inputs.skip_test_gate }}
+        run: |
+          set -euo pipefail
+          sha='${{ steps.target.outputs.sha }}'
+          verdict=$(curl -sS \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$sha&per_page=100" \
+            | jq -r '[.workflow_runs[] | select(.name == "tests")]
+                     | sort_by(.created_at) | last | .conclusion // "none"')
+          echo "tests on $sha: $verdict"
+          if [ "$verdict" != "success" ]; then
+            echo "::error::Refusing to deploy $sha -- the tests workflow is '$verdict' on it."
+            echo "A deployer that merely follows a branch will ship a commit whose"
+            echo "tests failed. Re-run deploy with skip_test_gate if you mean to."
+            exit 1
+          fi
+
+      - name: Keep a way back
+        run: |
+          set -euo pipefail
+          cd "$DEPLOY_DIR"
+          # Tag what is running now. Rebuilding replaces the image under the
+          # same name, so without this there is nothing to go back to.
+          if docker image inspect ricardi-ricardi >/dev/null 2>&1; then
+            docker image tag ricardi-ricardi ricardi-ricardi:rollback
+            echo "tagged the running image as :rollback"
+          else
+            echo "no existing image; this is a first deploy"
+          fi
+
+      - name: Move the working copy
+        run: |
+          set -euo pipefail
+          cd "$DEPLOY_DIR"
+          # checkout, not reset --hard: a dirty tracked file is a signal that
+          # someone changed something on the box, and silently discarding it
+          # is how that person stops trusting this pipeline.
+          if ! git diff --quiet || ! git diff --cached --quiet; then
+            echo "::error::Tracked files are modified in $DEPLOY_DIR. Deal with"
+            echo "them on the box first -- this will not throw away your edit."
+            git status --short
+            exit 1
+          fi
+          git checkout --detach '${{ steps.target.outputs.sha }}'
+          git log --oneline -1
+
+      - name: Build and restart
+        run: |
+          set -euo pipefail
+          cd "$DEPLOY_DIR"
+          # The container runs as the invoking uid, so pass it explicitly --
+          # UID is readonly in bash and does not survive into compose.
+          env UID="$(id -u)" GID="$(id -g)" docker compose up -d --build
+
+      - name: Is it actually up
+        id: health
+        run: |
+          set -euo pipefail
+          cd "$DEPLOY_DIR"
+          ok=no
+          for _ in $(seq 1 30); do
+            state=$(docker compose ps --format '{{.Service}} {{.State}}' | awk '$1=="ricardi"{print $2}')
+            if [ "$state" = "running" ] && docker compose logs --tail 200 ricardi 2>&1 | grep -q "connected to Slack"; then
+              ok=yes
+              break
+            fi
+            sleep 2
+          done
+          echo "ok=$ok" >> "$GITHUB_OUTPUT"
+          docker compose ps
+          if [ "$ok" != "yes" ]; then
+            echo "::error::Container did not reach 'connected to Slack' within 60s."
+            docker compose logs --tail 60 ricardi || true
+            exit 1
+          fi
+          echo "connected to Slack"
+
+      - name: Put it back the way it was
+        if: failure() && steps.health.outcome == 'failure'
+        run: |
+          set -euo pipefail
+          cd "$DEPLOY_DIR"
+          if docker image inspect ricardi-ricardi:rollback >/dev/null 2>&1; then
+            git checkout --detach '${{ steps.target.outputs.was }}'
+            docker image tag ricardi-ricardi:rollback ricardi-ricardi
+            env UID="$(id -u)" GID="$(id -g)" docker compose up -d
+            echo "::warning::Rolled back to ${{ steps.target.outputs.was }}"
+            docker compose ps
+          else
+            echo "::error::No :rollback image. The box needs hands."
+          fi
+
+      - name: Say what happened
+        if: always()
+        run: |
+          cd "$DEPLOY_DIR"
+          {
+            echo "### Deploy"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| requested | \`${TARGET_REF}\` |"
+            echo "| commit | \`${{ steps.target.outputs.sha }}\` |"
+            echo "| previous | \`${{ steps.target.outputs.was }}\` |"
+            echo "| now running | \`$(git rev-parse HEAD)\` |"
+            echo "| healthy | ${{ steps.health.outputs.ok || 'no' }} |"
+          } >> "$GITHUB_STEP_SUMMARY"

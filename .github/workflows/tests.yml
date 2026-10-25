@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # So a run can be started deliberately -- to re-run a flake without an empty
+  # commit, or to prove a branch green before deploying it.
+  #   gh workflow run tests.yml --ref <branch>
+  workflow_dispatch:
 
 jobs:
   offline:
