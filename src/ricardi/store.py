@@ -17,29 +17,75 @@ from pathlib import Path
 
 
 class ThreadBindings:
+    """Which agent a thread is talking to, and what it was asked to give up.
+
+    The flags stick to the thread rather than the message. Someone opens a
+    thread with `-ro` and leaves; the next person replies without it. Reading
+    that reply as "no flags" would hand back exactly what the first person was
+    trying to prevent, so a flag stays until it is lifted on purpose.
+    """
+
     def __init__(self, path: str | os.PathLike[str] | None):
         # None keeps bindings in memory only, which is what the tests want.
         self._path = Path(path) if path else None
-        self._bound: dict[str, str] = {}
+        self._bound: dict[str, dict] = {}
         if self._path and self._path.exists():
             try:
-                self._bound = json.loads(self._path.read_text(encoding="utf-8"))
+                raw = json.loads(self._path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 # A corrupt binding file must not stop Ricardi answering; the
                 # cost is that threads need naming again.
-                self._bound = {}
+                raw = {}
+            self._bound = {t: _entry(v) for t, v in (raw or {}).items()}
 
     def get(self, thread: str) -> str:
-        return self._bound.get(thread, "")
+        return self._bound.get(thread, {}).get("agent", "")
 
-    def bind(self, thread: str, agent: str) -> None:
-        if self._bound.get(thread) == agent:
+    def flags(self, thread: str) -> tuple[str, ...]:
+        return tuple(self._bound.get(thread, {}).get("flags", ()))
+
+    def bind(self, thread: str, agent: str, flags: tuple[str, ...] | None = None) -> None:
+        """Bind, and narrow. `flags=None` leaves the thread's flags alone.
+
+        New flags are unioned with the ones already there rather than replacing
+        them, because every flag subtracts: adding one is always safe, and
+        dropping one is the thing that needs saying out loud. See `lift`.
+        """
+        before = self._bound.get(thread, {})
+        held = tuple(before.get("flags", ()))
+        now = tuple(sorted(set(held) | set(flags or ())))
+        if before.get("agent") == agent and held == now:
             return
-        self._bound[thread] = agent
+        self._bound[thread] = {"agent": agent, "flags": list(now)}
+        self._flush()
+
+    def lift(self, thread: str) -> None:
+        """Drop the thread's flags. The only way they come off."""
+        entry = self._bound.get(thread)
+        if not entry or not entry.get("flags"):
+            return
+        entry["flags"] = []
         self._flush()
 
     def _flush(self) -> None:
         _write(self._path, self._bound)
+
+
+def _entry(value) -> dict:
+    """One binding, from either storage format.
+
+    The file used to be a flat {thread: agent}. Refusing to read it would
+    orphan every live conversation on the deploy that added flags.
+    """
+    if isinstance(value, str):
+        return {"agent": value, "flags": []}
+    if isinstance(value, dict):
+        flags = value.get("flags")
+        return {
+            "agent": str(value.get("agent", "")),
+            "flags": [str(f) for f in flags] if isinstance(flags, list) else [],
+        }
+    return {"agent": "", "flags": []}
 
 
 class SessionIds:

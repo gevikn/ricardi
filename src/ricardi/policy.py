@@ -25,6 +25,12 @@ from typing import Any, Protocol, runtime_checkable
 SHELL_TOOLS = ("Bash", "PowerShell")
 SHELL_ALIAS = "shell"
 
+# Tools that cannot change anything. An allowlist rather than a list of
+# dangerous ones, so a tool nobody here has heard of is treated as though it
+# writes. A new tool escaping `-ro` by being new is the failure worth
+# preventing; a read tool briefly refused is an annoyance.
+READING_TOOLS = frozenset({"Read", "Grep", "Glob", "NotebookRead"})
+
 # Tool inputs name their path under different keys depending on the tool.
 _PATH_KEYS = ("file_path", "path", "notebook_path")
 # Keys worth quoting back to the channel when announcing what is about to run.
@@ -63,6 +69,8 @@ class Request:
     tool: str = ""
     tool_input: dict[str, Any] = field(default_factory=dict)
     text: str = ""
+    # What the asker took away. Only ever subtracts -- see `_flag_refusal`.
+    flags: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -182,6 +190,39 @@ class Rule:
         return True
 
 
+def _flag_refusal(request: Request) -> Decision | None:
+    """Apply the asker's flags. Returns a refusal, or None to carry on.
+
+    Never returns an allow. That is not an oversight -- it is the contract
+    that lets this namespace grow without growing what anyone can reach.
+    """
+    if request.action != "tool" or not request.flags:
+        return None
+    if request.tool in READING_TOOLS:
+        return None
+
+    what = summarise(request.tool, request.tool_input)
+    if "ro" in request.flags:
+        return Decision(
+            allow=False,
+            reason=(
+                f"Asked with -ro, so nothing that could change anything may "
+                f"run. Refused: {what}. Ask again without -ro if you meant to."
+            ),
+            rule="-ro, from the request",
+        )
+    if "dry" in request.flags:
+        return Decision(
+            allow=False,
+            reason=(
+                f"Asked with -dry, so this is as far as it goes. Would have "
+                f"run: {what}. Say what you learned from planning it, and stop."
+            ),
+            rule="-dry, from the request",
+        )
+    return None
+
+
 def _tool_matches(tool: str, patterns: tuple[str, ...]) -> bool:
     """Match a tool name, expanding the `shell` alias to every platform's."""
     expanded: list[str] = []
@@ -233,6 +274,14 @@ class RulesPolicy:
         return Principal(id=slack_user_id, email=email, known=bool(email))
 
     async def decide(self, request: Request) -> Decision:
+        # Before the rules, and only ever to refuse. Putting it first is what
+        # makes the invariant structural: this branch has no `allow=True` to
+        # reach, so no flag can widen what the rules would have decided, and
+        # no rule that forgot something can be used to get around a flag.
+        refused = _flag_refusal(request)
+        if refused is not None:
+            return refused
+
         matched = [r for r in self.rules if r.matches(request)]
 
         denies = [r for r in matched if r.effect == "deny"]
