@@ -40,7 +40,7 @@ box can read it. Don't. Workstation 17+ ships an autostart service that runs
 VMs from a service context instead, which is the thing autologon was being
 abused to fake.
 
-**Two conditions kill this before you start.** An encrypted VM cannot
+**Three conditions kill this before you start.** An encrypted VM cannot
 autostart — there is a passphrase and nobody to type it:
 
 ```powershell
@@ -54,7 +54,25 @@ unattended at all, hypervisor be damned:
 manage-bde -status
 ```
 
-Check both first. They invalidate everything below.
+**And the VM must not live in a folder OneDrive syncs.** This one is common
+rather than exotic: Workstation's default VM location is under `Documents`, and
+on a modern Windows install OneDrive syncs `Documents`. With Files On-Demand, a
+`.vmdk` nobody has touched lately becomes a cloud-only placeholder — `Offline`
+and `RecallOnDataAccess` in its attributes. Opening it interactively triggers a
+download. The autostart service cannot trigger one, because hydration runs
+through the signed-in user's OneDrive process and the service has no session to
+ask. The VM fails to power on and the only evidence is a file that looks
+perfectly present:
+
+```powershell
+Get-Item "<path>\*.vmdk" | Select-Object Name, Length, Attributes
+```
+
+`Offline` or `RecallOnDataAccess` in that output means move the VM somewhere
+OneDrive does not reach — `C:\VMs` — before you touch anything else. Moving it
+is the right fix, and moving it has its own trap: see *Moving the VM* below.
+
+Check all three first. They invalidate everything below.
 
 **Run Workstation elevated.** VM → Power Actions → tick Auto Start. The config
 lives in a machine-level file:
@@ -78,6 +96,28 @@ Get-Content "C:\ProgramData\VMware\VMware Workstation\vmautostart.xml"
 
 You want a real `<e id="0">` block with your `.vmx` path, *outside* the comment
 the sample ships wrapped in.
+
+**Moving the VM.** Workstation notices that a VM's path changed and asks
+*"I Moved It" / "I Copied It"* at the next power-on. Interactively that is one
+click. Under the autostart service there is nobody to click it: the power-on
+blocks on a dialog you cannot see, and from outside it is indistinguishable
+from autostart not working at all. Answer it in advance, in the `.vmx`, with
+the VM powered off — a running VM rewrites its `.vmx` on shutdown and will
+discard your edit:
+
+```
+uuid.action = "keep"
+msg.autoAnswer = "TRUE"
+```
+
+`uuid.action = "keep"` is the line that matters past the dialog. It is the
+programmatic *"I Moved It"*: the VM keeps its UUID, and therefore its NIC keeps
+its MAC address, so the DHCP reservation still matches and the host key in your
+`known_hosts` is still the host key. The *"I Copied It"* answer — `"create"`,
+which is also what you get by guessing at the dialog — mints a new UUID and a
+new MAC, and hands you a new address plus an SSH host-key warning for what is,
+as far as you are concerned, the same machine. `msg.autoAnswer` is the backstop
+for every other blocking question Workstation can raise with no one present.
 
 **Then the service**, which is the half the dialog nags about and the half
 people skip:
@@ -362,6 +402,9 @@ back after a Windows Update reboot costs you the whole week.
 |---|---|
 | "Failed to update AutoStart configuration" | Workstation not elevated. UAC drops the Administrators SID, leaving `Everyone:(R)`. |
 | Autostart worked once, never again | Stale `.lck` directories beside the `.vmx` from a hard power-off. |
+| Autostart does nothing, and the VM's files all look present | A OneDrive placeholder the service cannot hydrate. Check the `.vmdk` for `Offline`. |
+| The VM never powers on after you moved it | Workstation is blocked on the *"I Moved It"* dialog with nobody to answer it. Set `uuid.action` and `msg.autoAnswer`. |
+| New address and an SSH host-key warning after a move | `uuid.action` resolved to `create`, so the VM has a fresh UUID and MAC. |
 | `vmrun list` shows nothing but the VM is up | Started in another context; your logged-in shell cannot see it. Not evidence. |
 | `malformed address '192.168.X.10/24'` | A placeholder reached the file. |
 | `netplan apply` leaves the interface with no address | NetworkManager renderer didn't reload. `systemctl restart NetworkManager`. |
@@ -385,6 +428,10 @@ link back to this document.
 - **The DHCP pool or VMnet8 subnet changes** after a Workstation upgrade or a
   network editor reset, stranding the static address. `ping` the gateway first
   when the VM is up but unreachable.
+- **A synced folder that was fine becomes a placeholder.** Files On-Demand
+  dehydrates on its own schedule, so a VM that came back unattended for months
+  stops coming back with nothing changed and the file still listed. Keep VMs
+  off synced paths rather than trusting them to stay local.
 - **A guest reboot that needs `-i`** will hang a script that reboots without
   it, as long as anything holds an inhibitor.
 
