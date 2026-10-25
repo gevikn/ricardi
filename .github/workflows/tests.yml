@@ -9,6 +9,11 @@ on:
   #   gh workflow run tests.yml --ref <branch>
   workflow_dispatch:
 
+# Read-only by default. A public repository hands this token to every fork's
+# pull request build, so the less it carries the better.
+permissions:
+  contents: read
+
 jobs:
   offline:
     # The shell tool is named differently per platform and policy rules match on
@@ -24,7 +29,7 @@ jobs:
         with:
           enable-cache: true
       - run: uv venv
-      - run: uv pip install -e ".[slack,sdk]" pytest pytest-asyncio
+      - run: uv pip install -e ".[slack,sdk]" pytest pytest-asyncio pyyaml
       # No tokens, no network, no Slack. The live suite is opt-in and never
       # runs here: it starts real Claude Code sessions and spends real money.
       - run: uv run pytest -q
@@ -37,5 +42,5 @@ jobs:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
       - run: uv venv
-      - run: uv pip install -e ".[sdk]" pytest pytest-asyncio
+      - run: uv pip install -e ".[sdk]" pytest pytest-asyncio pyyaml
       - run: uv run pytest -q tests/test_policy.py tests/test_policy_limits.py -k example

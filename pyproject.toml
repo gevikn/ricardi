@@ -16,7 +16,8 @@ sdk = ["claude-agent-sdk>=0.2.163"]
 ricardi = "ricardi.cli:main"
 
 [dependency-groups]
-dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+# pyyaml is for the workflow trust guard in tests/, not for the package.
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "pyyaml>=6"]
 
 [build-system]
 requires = ["hatchling"]
