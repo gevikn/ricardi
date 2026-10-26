@@ -158,3 +158,50 @@ def test_every_shipped_workflow_is_clean():
     for path in files:
         found += problems(path.name, yaml.safe_load(path.read_text(encoding="utf-8")))
     assert found == [], "\n".join(found)
+
+
+# -- the health check must look only at this container's own output -------
+
+def _deploy_steps() -> list[dict]:
+    wf = yaml.safe_load((WORKFLOWS / "deploy.yml").read_text(encoding="utf-8"))
+    return [s for job in wf["jobs"].values() for s in job["steps"]]
+
+
+def _health_script() -> str:
+    for step in _deploy_steps():
+        if step.get("id") == "health":
+            return step["run"]
+    pytest.fail("deploy.yml has no step with id 'health'")
+
+
+def test_the_health_check_does_not_accept_output_from_before_this_container():
+    """A stale success line must not be able to satisfy the check.
+
+    `docker compose logs --tail N` is unbounded in time. A container that is
+    restarted rather than recreated keeps its log file, so a "connected to
+    Slack" from an earlier deploy stays within the last N lines and a restart
+    that failed to connect reads as healthy -- and the rollback never fires.
+
+    Twice already a deploy has gone green on a line it did not produce.
+    """
+    for line in _health_script().splitlines():
+        if "connected to Slack" in line and "docker compose logs" in line:
+            assert "--since" in line, (
+                "the grepped log window is unbounded in time: " + line.strip()
+            )
+            break
+    else:
+        pytest.fail("no line greps the logs for the readiness marker")
+
+
+def test_the_log_window_is_anchored_to_the_container_not_the_deploy():
+    """Anchoring on the deploy's own start time would break a no-op deploy.
+
+    When nothing changed, `compose up` leaves the running container alone and
+    produces no new output, so a window starting at the deploy would be empty
+    and a correct deploy would fail. The container's own StartedAt is right in
+    both cases: fresh for a restart, original for a container left untouched.
+    """
+    assert "StartedAt" in _health_script(), (
+        "the --since anchor must come from the container's StartedAt"
+    )

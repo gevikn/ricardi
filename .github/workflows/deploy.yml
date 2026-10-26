@@ -129,9 +129,21 @@ jobs:
           ok=no
           for _ in $(seq 1 30); do
             state=$(docker compose ps --format '{{.Service}} {{.State}}' | awk '$1=="ricardi"{print $2}')
-            if [ "$state" = "running" ] && docker compose logs --tail 200 ricardi 2>&1 | grep -q "connected to Slack"; then
-              ok=yes
-              break
+            if [ "$state" = "running" ]; then
+              # Only this container's own output counts. --tail alone is
+              # unbounded in time: a container that is restarted rather than
+              # recreated keeps its log file, so an earlier deploy's success
+              # line stays in view and a restart that never connected reads as
+              # healthy. Anchoring on the deploy instead would break the other
+              # direction -- when nothing changed, compose correctly leaves the
+              # container alone and produces no new output at all. StartedAt is
+              # right both ways: fresh after a restart, original when untouched.
+              cid=$(docker compose ps -q ricardi)
+              since=$(date -u -d "$(docker inspect -f '{{.State.StartedAt}}' "$cid")" +%Y-%m-%dT%H:%M:%SZ)
+              if docker compose logs --since "$since" --tail 200 ricardi 2>&1 | grep -q "connected to Slack"; then
+                ok=yes
+                break
+              fi
             fi
             sleep 2
           done
