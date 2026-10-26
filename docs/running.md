@@ -161,29 +161,14 @@ Both example files use **container** paths, so no host path appears in either
 and the same config works on any machine. `/workspace` is whatever you mount
 there; point it at the one worktree you mean, not a home directory.
 
-**Credentials.** The Agent SDK does not call an API — it spawns the `claude`
-CLI, which needs a credential. There are two ways to give it one, and which you
-pick matters more on a box nobody logs into than it first appears.
-
-*An API key, for a box left running.* Put a Console API key in `.env` as
-`ANTHROPIC_API_KEY` and run nothing else. It is the only option here with no
-scheduled failure built in: it ends when you rotate it, not on a clock you
-cannot see. `claude-config/` stays empty. The trade is billing — per-token API
-spend rather than a subscription — which is the more honest arrangement anyway
-for a bot that several people in a Slack workspace can invoke.
-
-*A stored login, for a box you sit at.* `docker compose run --rm login` signs
-Claude Code in once into `./claude-config`, mounted at `/config/claude`. A
-directory of its own rather than your host `~/.claude`, so the container holds
-one account's credentials and this project's transcripts, not everything you
-have ever done with Claude Code. Subscription billing, but the session expires
-without warning, and the only symptom is a mention that gets no reply.
-
-**Pick one.** A stored credential can take precedence over the environment, so
-an `ANTHROPIC_API_KEY` sitting beside a populated `claude-config/` may be
-decoration — and worse, a long-running process can keep using an *expired
-stored session* while a perfectly good key goes unused. On an unattended box:
-no `login` run, and `claude-config/` empty.
+**Credentials here.** *Which* credential to use is settled under
+[Credentials: pick one](#credentials-pick-one-and-never-sign-in-on-the-box)
+above. This is only where Docker keeps it. `.env` is handed to the container;
+`docker compose run --rm login`, for a box you sit at, stores a login in
+`./claude-config`, mounted at `/config/claude`. A directory of its own rather
+than your host `~/.claude`, so the container holds one account's credentials
+and this project's transcripts, not everything you have ever done with Claude
+Code. On an always-on box it stays empty.
 
 Nothing is baked into the image either way.
 
