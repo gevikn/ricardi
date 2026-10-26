@@ -93,7 +93,7 @@ name       = "read anything under the agents' worktrees"
 effect     = "allow"
 actions    = ["tool"]
 tools      = ["Read", "Grep", "Glob", "NotebookRead"]
-path_under = "~/experiments"
+path_under = "~/repos"
 
 # Writing is confined three ways: to the people who agreed to it, to one
 # repository, and to a path inside it. `users` is the one that used to be

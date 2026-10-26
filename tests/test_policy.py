@@ -238,7 +238,7 @@ def test_the_shipped_example_loads_and_denies_the_obvious_things():
                          tool=name, tool_input=ti)
 
     assert asyncio.run(
-        decide(t("Read", file_path="~/experiments/shared-repo/main.py"))
+        decide(t("Read", file_path="~/repos/shared/main.py"))
     ).allow is True
     assert asyncio.run(decide(t("Bash", command="pytest -q"))).allow is True
     assert asyncio.run(decide(t("Bash", command="git push origin main"))).allow is False
@@ -267,8 +267,14 @@ def test_the_shipped_example_loads_and_denies_the_obvious_things():
     assert asyncio.run(decide(elsewhere("Write", file_path="/repo/x"))).allow is False
     assert asyncio.run(decide(stranger("Bash", command="pytest -q"))).allow is False
     assert asyncio.run(decide(stranger("Write", file_path="/repo/x"))).allow is False
-    # Reading stays open to everyone the roster knows: it changes nothing.
-    assert asyncio.run(decide(elsewhere("Read", file_path="/repo/main.py"))).allow is True
+    # Reading is bounded by path, not by who asks. Another agent reading
+    # inside a worktree is fine -- reading changes nothing, and scoping it per
+    # agent would buy nothing. Reading *outside* every worktree is refused, so
+    # a file nobody thought to deny is still out of reach.
+    assert asyncio.run(
+        decide(elsewhere("Read", file_path="~/repos/shared/main.py"))
+    ).allow is True
+    assert asyncio.run(decide(elsewhere("Read", file_path="/repo/main.py"))).allow is False
 
 
 def test_the_example_lets_the_listed_people_ask_in_the_listed_channel():
@@ -388,7 +394,7 @@ EXPOSED_BEFORE = [
     "~/.gh/hosts.yml",
     "~/.netrc",
     "/etc/shadow",
-    "~/experiments/shared-repo/deploy.pem",
+    "~/repos/shared/deploy.pem",
 ]
 
 
@@ -402,7 +408,7 @@ def test_neither_example_hands_out_a_credential_file(policy_file, path):
         action="tool",
         principal=P.Principal(id="U11111111111", email="them@example.com", known=True),
         resource=P.Resource(channel_id="C00000000000"),
-        agent="scout",
+        agent="shared",
         tool="Read",
         tool_input={"file_path": path},
     )
