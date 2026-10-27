@@ -12,6 +12,11 @@ ways.
 @ricardi tell shared to summarise what changed this week
 ```
 
+With one agent in the catalogue there is nothing to pick, so the name is
+optional and `@ricardi what changed this week` reaches it. Naming an agent is
+how you say which repository you mean; with one, that question has a single
+answer.
+
 Once a thread is talking to an agent, replying in the thread is enough — no
 mention needed.
 
@@ -277,8 +282,9 @@ Two things to get right:
 - One turn at a time per agent, since a session is a single conversation. A
   second person asking the same agent waits behind the first.
 - `tell`/`ask`/`<agent>:` is parsed exactly, not interpreted. A sentence like
-  `note: the build is red` is read as addressing an agent called `note` and
-  gets told no such agent exists.
+  `note: the build is red` is read as addressing an agent called `note`. With
+  a choice of agents that is an error; with only one there was nowhere else it
+  could have been going, so it is sent there as typed.
 - Progress inside a turn is not streamed; only announced commands appear while
   work is happening.
 - Thread bindings are never evicted, so `state/threads.json` grows with every

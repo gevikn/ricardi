@@ -53,6 +53,11 @@ class Command:
     text: str = ""
     # Sorted, so two spellings of the same request compare and store alike.
     flags: tuple[str, ...] = ()
+    # What was typed, after flags came off and before any of it was read as
+    # addressing. A caller that disagrees with the interpretation needs the
+    # original: "tell me what version we are" is an agent called "me" here,
+    # and a caller who knows there is no such agent wants the sentence back.
+    raw: str = ""
 
 
 def parse(message: str) -> Command:
@@ -75,27 +80,28 @@ def parse(message: str) -> Command:
         flags.add(name)
         text = text[m.end():].lstrip()
     found = tuple(sorted(flags))
+    raw = text
 
     if found and not text:
         # "-ro" alone restricts nothing, because there is nothing to restrict.
         return Command(kind="empty", flags=found)
     if _HELP.match(text):
-        return Command(kind="help", flags=found)
+        return Command(kind="help", flags=found, raw=raw)
     if _LIST.match(text):
-        return Command(kind="list", flags=found)
+        return Command(kind="list", flags=found, raw=raw)
     if _WHO.match(text):
-        return Command(kind="who", flags=found)
+        return Command(kind="who", flags=found, raw=raw)
 
     m = _TELL.match(text)
     if m:
         body = m.group("text").strip()
         # "tell me the agents" is a listing, not an agent called "me".
         if m.group("agent").lower() in {"me", "us"} and _LIST.match(body):
-            return Command(kind="list", flags=found)
+            return Command(kind="list", flags=found, raw=raw)
         if body:
-            return Command(kind="tell", agent=m.group("agent"), text=body, flags=found)
+            return Command(kind="tell", agent=m.group("agent"), text=body, flags=found, raw=raw)
         # "tell scout" with nothing to say is a request to talk to scout.
-        return Command(kind="tell", agent=m.group("agent"), text="", flags=found)
+        return Command(kind="tell", agent=m.group("agent"), text="", flags=found, raw=raw)
 
     m = _COLON.match(text)
     if m:
@@ -104,9 +110,10 @@ def parse(message: str) -> Command:
             agent=m.group("agent"),
             text=m.group("text").strip(),
             flags=found,
+            raw=raw,
         )
 
-    return Command(kind="say", text=text, flags=found)
+    return Command(kind="say", text=text, flags=found, raw=raw)
 
 
 HELP = (
