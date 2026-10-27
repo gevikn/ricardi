@@ -9,7 +9,7 @@ import os
 import sys
 from pathlib import Path
 
-from ricardi import config, policy as policy_mod
+from ricardi import config, policy as policy_mod, readiness
 from ricardi.audit import AuditedPolicy, AuditLog
 from ricardi.limits import Limits, RateLimited
 from ricardi.app import Ricardi
@@ -37,6 +37,10 @@ def _load_env(path: Path) -> None:
 
 async def _serve(args: argparse.Namespace) -> int:
     settings = config.load(args.agents)
+    # Nothing is ready yet, and the state directory outlives the container --
+    # so a process that starts and never serves must not leave the last one's
+    # marker standing for the deploy to read as its own.
+    readiness.clear(settings.state_dir)
     # Loaded before anything connects: a broken policy should stop startup, not
     # surface as a refusal to the first person who asks.
     policy = policy_mod.load(args.policy)
@@ -100,9 +104,13 @@ async def _serve(args: argparse.Namespace) -> int:
     )
 
     await ricardi.start()
-    names = ", ".join(a.name for a in settings.agents)
+    names = [a.name for a in settings.agents]
+    # The machine-readable half of the line below. The deploy reads this
+    # instead of grepping the container log, which on the box loses its
+    # newest lines and so answers "is it up" with a previous boot's word.
+    readiness.mark_ready(settings.state_dir, where=where, agents=names)
     print(
-        f"ricardi on {where}; agents: {names}; "
+        f"ricardi on {where}; agents: {', '.join(names)}; "
         f"{len(policy.rules)} rules, {len(policy.roster)} people"
         + (f", {per_hour}/hour" if per_hour else "")
         + (f", {per_minute}/minute" if per_minute else "")
