@@ -126,23 +126,55 @@ jobs:
         run: |
           set -euo pipefail
           cd "$DEPLOY_DIR"
+          # Not the log. This box's container log loses its newest lines
+          # within minutes, so grepping it answers "is it up" either with a
+          # previous boot's word -- an unbounded --tail cannot tell the two
+          # apart -- or with nothing at all, on a container that is fine.
+          # The process writes state/ready.json once it is actually serving,
+          # and state/ is a bind mount, so it arrives here with no log driver
+          # anywhere in the path.
+          cid=$(docker compose ps -q ricardi)
+          if [ -z "$cid" ]; then
+            echo "::error::No ricardi container after the build."
+            exit 1
+          fi
+          # Anchored on the container, not on this deploy. An unchanged image
+          # is not recreated, so a no-op deploy writes no new marker -- and a
+          # gate that demanded one would fail the deploy that changed nothing.
+          started=$(date -u -d "$(docker inspect -f '{{.State.StartedAt}}' "$cid")" +%s)
           ok=no
+          stamp=""
           for _ in $(seq 1 30); do
             state=$(docker compose ps --format '{{.Service}} {{.State}}' | awk '$1=="ricardi"{print $2}')
-            if [ "$state" = "running" ] && docker compose logs --tail 200 ricardi 2>&1 | grep -q "connected to Slack"; then
-              ok=yes
-              break
+            if [ "$state" = "running" ] && [ -f state/ready.json ]; then
+              # An absent stamp has to count as no stamp. `date -u -d ""` is
+              # not an error -- it is midnight today -- so handing it an empty
+              # value yields a real time, and on a deploy run just after
+              # midnight UTC that time sits AFTER a container started the
+              # evening before. Which is exactly the no-op deploy.
+              stamp=$(jq -r '.connected_at // empty' state/ready.json 2>/dev/null || true)
+              connected=0
+              if [ -n "$stamp" ]; then
+                connected=$(date -u -d "$stamp" +%s 2>/dev/null || echo 0)
+              fi
+              if [ "$connected" -ge "$started" ]; then
+                ok=yes
+                break
+              fi
             fi
             sleep 2
           done
           echo "ok=$ok" >> "$GITHUB_OUTPUT"
           docker compose ps
           if [ "$ok" != "yes" ]; then
-            echo "::error::Container did not reach 'connected to Slack' within 60s."
+            echo "::error::No readiness marker at or after this container started."
+            echo "marker:"
+            cat state/ready.json 2>/dev/null || echo "  (none written)"
+            # Unreliable as a decision, still the first thing a person reads.
             docker compose logs --tail 60 ricardi || true
             exit 1
           fi
-          echo "connected to Slack"
+          echo "ready since $stamp"
 
       - name: Put it back the way it was
         if: failure() && steps.health.outcome == 'failure'

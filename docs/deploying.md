@@ -108,8 +108,24 @@ write access.
    discarding it is how that person stops trusting this pipeline.
 5. **Rebuilds and restarts** with `UID`/`GID` passed explicitly, because `UID`
    is readonly in bash and does not reach compose on its own.
-6. **Waits for the container to say `connected to Slack`**, up to a minute.
-   Running is not the same as working; the log line is the real signal.
+6. **Waits for `state/ready.json`**, up to a minute. Running is not the same
+   as working, so the gate wants the process's own word for it: Ricardi writes
+   that file once it is serving, and clears it at startup, so its presence
+   means ready *now*. The gate compares the `connected_at` in it against the
+   container's `StartedAt`.
+
+   It used to grep the container log for `connected to Slack` instead, and
+   that was wrong twice over. `--tail` is unbounded in time, so a container
+   restarted rather than recreated keeps its old output and the gate passes on
+   a line from a previous deploy — indistinguishable from one that never came
+   up. And this box's log loses its newest lines within minutes, so anchoring
+   the window on the current boot, the obvious fix, fails a container that is
+   perfectly healthy. `state/` is a bind mount, so the marker crosses the
+   container boundary with no log driver in the path.
+
+   The comparison is against the container, never against when the deploy ran:
+   an unchanged image is not recreated, and a gate expecting something new
+   every time would fail the deploy that correctly changed nothing.
 7. **Rolls back** to the previous commit and image if that never arrives.
 
 It never touches `.env`, `policy.toml`, `agents.toml` or `state/`. Those are
