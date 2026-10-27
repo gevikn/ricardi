@@ -68,3 +68,12 @@ def test_a_sentence_that_starts_with_a_word_and_colon_is_not_hijacked():
     # A colon after several words is punctuation, not addressing.
     assert router.parse("note: the build is red").kind == "tell"
     assert router.parse("the plan is this: ship it").kind == "say"
+
+
+def test_the_message_is_kept_as_typed():
+    # What someone typed, after flags come off and before it is interpreted.
+    # A caller that disagrees with the interpretation -- "tell me ..." read as
+    # an agent called "me" -- needs the original to fall back on.
+    assert router.parse("tell me what version we are").raw == "tell me what version we are"
+    assert router.parse("-ro tell me the thing").raw == "tell me the thing"
+    assert router.parse("scout: look").raw == "scout: look"

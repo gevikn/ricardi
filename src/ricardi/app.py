@@ -54,7 +54,16 @@ class Ricardi:
         command = router.parse(inbound.text)
 
         if command.kind in {"help", "empty"}:
-            await self._say(inbound, router.HELP)
+            # Help is where someone learns what to type, so it is the one
+            # place the optional name has to be said out loud.
+            only = await self._only_agent()
+            extra = (
+                f"\n\nThere is only *{only}* to talk to, so you can "
+                f"skip the name and just ask."
+                if only
+                else ""
+            )
+            await self._say(inbound, router.HELP + extra)
             return
 
         if command.kind == "bad_flag":
@@ -87,23 +96,34 @@ class Ricardi:
             return
 
         if command.kind == "tell":
-            agent = await self._resolve(command.agent)
+            text = command.text
+            try:
+                agent = await self._resolve(command.agent)
+            except BackendError:
+                # With one agent there was nowhere else this could have been
+                # going, so the name was part of the sentence rather than
+                # addressing: "tell me what version we are". Send it as typed.
+                agent = await self._only_agent()
+                if not agent:
+                    raise
+                text = command.raw
             # Decided before binding: a refused request must not leave the
             # thread quietly pointed at an agent it may not use.
             if not await self._permit(inbound, "ask", agent):
                 return
             self.bindings.bind(inbound.thread, agent, command.flags)
-            if not command.text:
+            if not text:
                 await self._say(
                     inbound,
                     f"This thread is talking to *{agent}* now. Say what you need.",
                 )
                 return
-            await self._relay(inbound, agent, command.text)
+            await self._relay(inbound, agent, text)
             return
 
-        # A plain message continues whatever this thread was already doing.
-        bound = self.bindings.get(inbound.thread)
+        # A plain message continues whatever this thread was already doing,
+        # or -- when there is only one agent to continue with -- starts it.
+        bound = self.bindings.get(inbound.thread) or await self._only_agent()
         if not bound:
             await self._say(
                 inbound,
@@ -161,6 +181,20 @@ class Ricardi:
             await private(inbound.channel, where, inbound.user, text)
             return
         await self._say(inbound, text)
+
+    async def _only_agent(self) -> str:
+        """The agent there is no point naming, or "" when there is a choice.
+
+        Naming an agent says which repository is meant. With one in the
+        catalogue that question has a single answer, and asking it back is
+        ceremony -- agents are named after their repository, so where the
+        repository shares the bot's name it reads `@ricardi tell ricardi`.
+
+        This picks who, never whether: every caller still goes through the
+        policy check before anything reaches the agent.
+        """
+        agents = await self.backend.list_agents()
+        return agents[0].name if len(agents) == 1 else ""
 
     async def _resolve(self, name: str) -> str:
         """Match an agent name the way a human typed it."""
