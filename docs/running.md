@@ -228,8 +228,11 @@ sudo ./scripts/install-service.sh --uninstall
 The preflight refuses unless two things are true, both of them things that
 would otherwise fail confusingly at runtime:
 
-**A credential in `.env`.** Required here, not optional — see the Keychain
-problem above. Either kind will do.
+**A credential in `.env`.** Required here, not optional. Claude Code keeps its
+OAuth token in the login Keychain, and a LaunchDaemon runs outside any login
+session — so the Keychain is locked and unreachable, and `~/.claude` existing
+proves nothing. An API key, or a token from `claude setup-token`, is the way
+in. Either kind will do.
 
 **`claude` in `~/.local/bin`, `/usr/local/bin` or `/opt/homebrew/bin`.** A
 LaunchDaemon starts with a bare `PATH`, so the plist has to name the directory
