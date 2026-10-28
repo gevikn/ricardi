@@ -92,7 +92,13 @@ def _repo(
     return root, home
 
 
-def _run(root: Path, home: Path, stubs: Path, *args: str) -> subprocess.CompletedProcess:
+def _run(
+    root: Path,
+    home: Path,
+    stubs: Path,
+    *args: str,
+    env_extra: dict | None = None,
+) -> subprocess.CompletedProcess:
     import os
 
     env = dict(os.environ)
@@ -102,6 +108,13 @@ def _run(root: Path, home: Path, stubs: Path, *args: str) -> subprocess.Complete
         USER="testuser",
         SUDO_USER="testuser",
     )
+    # A None value removes the variable, which is the only way to reproduce an
+    # invocation that is not `sudo` -- see the root-shell test below.
+    for key, value in (env_extra or {}).items():
+        if value is None:
+            env.pop(key, None)
+        else:
+            env[key] = value
     return subprocess.run(
         ["bash", str(root / "scripts" / SCRIPT.name), *args],
         capture_output=True, text=True, env=env, cwd=str(root),
@@ -327,3 +340,46 @@ def test_it_refuses_two_credentials_in_env(tmp_path):
     r = _run(root, home, _stubs(tmp_path, home), "--dry-run")
     assert r.returncode == 1
     assert "conflict" in r.stdout
+
+
+def test_it_refuses_when_it_would_run_as_root(tmp_path):
+    """A root shell is not `sudo`, and only `sudo` sets SUDO_USER.
+
+    `sudo -i`, `su -`, a provisioning script and CI all leave it unset, so
+    RUN_USER falls through to USER -- which in a root shell is root. The
+    plist would then carry UserName=root and launchd would run a
+    chat-driven shell agent as root, which is the one outcome this script
+    exists to prevent.
+
+    `test_it_does_not_run_as_root` cannot see this, because the harness it
+    uses always sets SUDO_USER. That is why the bug survived having a test
+    named after it.
+    """
+    root, home = _repo(tmp_path)
+    r = _run(
+        root, home, _stubs(tmp_path, home), "--dry-run",
+        env_extra={"SUDO_USER": None, "USER": "root"},
+    )
+    assert r.returncode != 0, "installed anyway: " + r.stdout + r.stderr
+    assert "root" in (r.stdout + r.stderr).lower()
+    # And it must not have got as far as producing one.
+    assert "UserName" not in r.stdout
+
+
+def test_the_example_env_ships_no_active_credential():
+    """`have_env_key` matches a bare KEY=value, so a placeholder counts.
+
+    An example shipping one breaks the new preflight both ways: uncomment
+    the other credential and the installer refuses because "both are set";
+    change nothing and it installs a daemon whose credential is the literal
+    `sk-ant-...`, which is the failure that check exists to produce.
+    """
+    names = ("ANTHROPIC_API_KEY=", "CLAUDE_CODE_OAUTH_TOKEN=")
+    body = (SCRIPT.parents[1] / ".env.example").read_text(encoding="utf-8")
+    active = [
+        line
+        for line in body.splitlines()
+        if any(line.lstrip().startswith(n) for n in names)
+        and line.split("=", 1)[1].strip()
+    ]
+    assert active == [], f"active credential lines in .env.example: {active}"
