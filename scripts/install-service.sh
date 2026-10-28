@@ -190,7 +190,12 @@ install_systemd() {
     echo "note: could not enable lingering; the service will stop when you log out."
 
   echo
-  systemctl --user --no-pager status "$NAME" | head -5
+  # `|| true` because this runs under `set -euo pipefail`: status exits 3 for
+  # a unit that is not active, and head closing the pipe early can leave it
+  # with SIGPIPE even on success. Either aborts the script here -- after the
+  # unit is written and enabled, and before the line telling you how to read
+  # its log, which is the line you most need when it just died on a bad .env.
+  systemctl --user --no-pager status "$NAME" | head -5 || true
   echo
   echo "Watch:  journalctl --user -u $NAME -f"
 }
