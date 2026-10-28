@@ -14,7 +14,14 @@
 # the triggering workflow file says, as the runner's user. That is fine for a
 # private repository whose collaborators you would hand a shell to anyway. It
 # is NOT fine for a public one -- a pull request from a fork would run on this
-# machine. If this repository is ever made public, detach the runner first.
+# machine.
+#
+# The control is structural rather than remembered: no untrusted event may name
+# a self-hosted runner, and `tests/test_workflow_trust.py` asserts that on every
+# run. Keep this workflow on trusted triggers only and the guard will fail the
+# build if it ever drifts. Do not substitute fork-approval settings for it --
+# the "first-time contributor" exemption lets anyone through once they have had
+# a single commit merged.
 name: deploy
 
 on:

@@ -5,6 +5,12 @@ __pycache__/
 .pytest_cache/
 state/
 
+# Build artefacts. `uv build` writes dist/, and an editable install leaves an
+# egg-info behind; neither is source.
+dist/
+build/
+*.egg-info/
+
 # Local config and scratch, as opposed to the committed examples.
 agents.toml
 # Holds the roster: real Slack user ids and email addresses.
