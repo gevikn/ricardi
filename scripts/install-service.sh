@@ -86,7 +86,17 @@ check_one_credential() {
 problems=()
 
 check_common() {
-  [ -x "$ROOT/.venv/bin/python" ] || problems+=("No virtualenv at $ROOT/.venv. Run: uv venv && uv pip install -e .[slack,sdk]")
+  # Only `sudo` exports SUDO_USER. From a root shell -- `sudo -i`, `su -`, a
+  # provisioning script, CI -- RUN_USER falls through to USER or `id -un` and
+  # becomes root. The macOS branch's own root check passes, because being root
+  # is exactly what it asks for, so the plist would say UserName=root and
+  # launchd would run an agent that executes shell commands from a chat channel
+  # as root. Refusing beats guessing who was meant to own it.
+  if [ "$RUN_USER" = root ]; then
+    problems+=("This would install the service to run as root, which is the one thing it must not do. Run it from the shell of the user that should own the agent: 'sudo ./scripts/install-service.sh'. A root shell leaves SUDO_USER unset, so there is nobody else to run as.")
+  fi
+  # Quoted: zsh is the default shell on macOS and globs the brackets otherwise.
+  [ -x "$ROOT/.venv/bin/python" ] || problems+=("No virtualenv at $ROOT/.venv. Run: uv venv && uv pip install -e '.[slack,sdk]'")
   local f
   for f in agents.toml policy.toml .env; do
     [ -f "$ROOT/$f" ] || problems+=("Missing $f. Copy the example beside it and fill it in.")
