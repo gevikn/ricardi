@@ -1,0 +1,84 @@
+# A request for a shared session. Copy, edit, open a pull request.
+#
+# You cannot ask for a session in Slack, because what this produces *is* the
+# channel. And the parts that mint a key, create a repository and register the
+# name must not be reachable from a channel at all -- so the request is a file
+# somebody reviews, like the policy it will run under.
+#
+# CI checks this file on the pull request, so most mistakes come back to you
+# before a human spends time on it. What CI cannot check is whether you should
+# have it; that is the review.
+
+# The Slack workspace the session's channel will live in.
+workspace = "acme"
+
+# The name people will address in Slack, and the name every rule about this
+# session is keyed on. Letters, digits, hyphens and underscores.
+#
+# One channel, one name: a session is serial -- turn N+1's context is the
+# result of turn N -- so a name belongs to exactly one channel. If you want to
+# talk to a session, you join its channel.
+name = "project1"
+
+# ------------------------------------------------------------------- people
+#
+# Both ids are needed for everyone, and only you can supply the pairing: Slack
+# and GitHub do not know about each other, and GitHub will not resolve someone
+# by email unless they have made it public.
+
+[owner]
+slack = "U00000000000"
+email = "owner@example.com"
+git = "owner-login"
+# No tier here. The owner's comes from owning it.
+
+# Nobody else to start with is normal -- delete the blocks below and invite
+# people from the channel later.
+#
+# Tiers:
+#   read   may ask, and the agent may not use Write or Edit on their behalf
+#   write  may ask, and it may
+#   none   presence only
+#
+# There is no `exec` tier. What a shell may do is this session's scope, set
+# below and in policy, not something a person carries.
+#
+# Worth knowing before you invite: a read tier stops a colleague changing
+# something by accident, not a colleague who is trying. Everyone in the
+# channel sees everything the session says. Do not invite people you do not
+# trust.
+
+[[invitee]]
+slack = "U11111111111"
+email = "them@example.com"
+git = "them-login"
+tier = "write"
+
+[[invitee]]
+slack = "U22222222222"
+email = "watcher@example.com"
+git = "watcher-login"
+tier = "read"
+
+# ------------------------------------------------------------- the repository
+#
+# Optional. Leave the whole block out and an admin will set the checkout up,
+# or you can ask for one from the channel afterwards.
+#
+# Always owner/repo, so there is no guessing about which account it means.
+
+[repo]
+name = "acme/project1"
+# Create it if it is not there. If it exists it is cloned instead.
+create_if_missing = true
+
+# ----------------------------------------------------------------- the limits
+#
+# Both are per turn, not per day, and both must be above zero. `agents.toml`
+# lets 0 mean "no ceiling" on purpose; a request may not, because an unbounded
+# session is a decision for whoever is paying rather than a field you left
+# blank. An admin may apply a lower ceiling than you ask for.
+
+[limits]
+max_budget_usd = 2.00
+max_turns = 60
