@@ -2,8 +2,31 @@
 name = "ricardi"
 version = "0.1.0"
 description = "A Slack proxy to Claude Code agents running on a box"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Gevik Nalbandian" }]
 requires-python = ">=3.11"
+# Nothing at all by default: the transport and the backend are both optional, so
+# `pip install ricardi` pulls in no HTTP stack and no SDK until you say which
+# halves you want. See [project.optional-dependencies].
 dependencies = []
+
+keywords = ["slack", "claude", "claude-code", "agents", "policy", "bot"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Communications :: Chat",
+    "Topic :: Software Development :: Quality Assurance",
+]
+
+[project.urls]
+Homepage = "https://github.com/gevikn/ricardi"
+Source = "https://github.com/gevikn/ricardi"
+Issues = "https://github.com/gevikn/ricardi/issues"
+Security = "https://github.com/gevikn/ricardi/blob/main/SECURITY.md"
 
 [project.optional-dependencies]
 # The Slack front end. Socket Mode dials out to Slack, so the box needs no

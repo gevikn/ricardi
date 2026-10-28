@@ -160,6 +160,12 @@ tar xzf runner.tar.gz && rm runner.tar.gz
 The labels matter: `deploy.yml` targets `[self-hosted, ricardi-home]`, so a
 second runner added later does not silently start answering for this one.
 
+`ricardi-home` is just the name of the box this was first set up on — there is
+nothing special about the string. Call it whatever your machine is called, but
+change it in **both** places or the deploy will queue forever waiting for a
+runner that does not exist: here, and the `runs-on` in
+`.github/workflows/deploy.yml`.
+
 Install it as a service so it survives the reboot — which on this host is the
 part most likely to be forgotten, given what it took to make the VM itself
 come back unattended:

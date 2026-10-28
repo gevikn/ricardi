@@ -7,6 +7,15 @@ A Slack bot that is a proxy to Claude Code agents running on a box. Humans and
 Ricardi share a channel; Ricardi holds the agents and carries messages both
 ways.
 
+> **Everyone on the roster can run code on your machine.** That is what Ricardi
+> is for rather than a flaw in it — and its safety layers err toward preventing
+> accidents, not toward withstanding somebody who is trying. A read-only tier
+> stops a colleague changing something by mistake; it does not stop a colleague
+> who means to, because a shell can cause a write indirectly whatever the rules
+> say. **Do not invite people you would not hand a terminal.**
+> [`SECURITY.md`](SECURITY.md) is the rest of it and is worth reading before you
+> point this at anything you care about.
+
 ```
 @ricardi list agents
 @ricardi tell shared to summarise what changed this week
@@ -271,7 +280,9 @@ Two things to get right:
 | [`docs/practices.md`](docs/practices.md) | how to scope agents and review policy |
 | [`docs/roadmap.md`](docs/roadmap.md) | what is planned, including Teams |
 | [`docs/name.md`](docs/name.md) | why a transparent octopus |
+| [`requests/README.md`](requests/README.md) | asking for a shared session, as a reviewed pull request |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | how to work on it |
+| [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) | argue about the work, not each other |
 
 ## Known limits
 
