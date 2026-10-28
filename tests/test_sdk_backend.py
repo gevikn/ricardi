@@ -282,3 +282,48 @@ async def test_the_gate_sees_who_asked_not_just_which_agent():
         {"tool_name": "Bash", "tool_input": {"command": "ls"}}, None, None
     )
     assert seen == {"email": "who@example.com", "agent": "scout", "tool": "Bash"}
+
+
+def test_the_gate_runs_under_a_timeout_we_chose():
+    """The hook that enforces every tool decision has a deadline.
+
+    Left unset it inherits the SDK's 60-second default, and what the CLI does
+    when a hook exceeds it -- permit or refuse -- is not something this project
+    has established. Two timeouts exist and only one of them is ours; naming it
+    is how it stays ours if the default ever moves.
+    """
+    pytest.importorskip("claude_agent_sdk")
+    from ricardi.backends.sdk import GATE_TIMEOUT
+
+    backend = Stubbed([spec()])
+    (matcher,) = backend._options(backend._live["scout"])["hooks"]["PreToolUse"]
+    assert matcher.timeout == GATE_TIMEOUT
+
+
+async def test_the_gate_passes_the_agents_roots_to_policy():
+    """Without this, the per-name path bound silently does nothing.
+
+    `policy.py` treats an empty `agent_roots` as "unconstrained by that check",
+    which is what keeps a request with no agent behind it working. That makes
+    this the one place the bound can be lost, so it is the one place worth
+    asserting rather than assuming.
+    """
+    seen = {}
+
+    class Watching:
+        async def decide(self, request):
+            seen["roots"] = request.agent_roots
+            from ricardi.policy import Decision
+
+            return Decision(allow=True)
+
+    rooted = AgentSpec(
+        name="scout", cwd=".", roots=("/workspace/one", "/workspace/two")
+    )
+    backend = Stubbed([rooted], policy=Watching())
+    live = backend._live["scout"]
+    live.caller = Caller(principal=Principal(id="U1", email="who@example.com", known=True))
+    await backend._gate(live)(
+        {"tool_name": "Read", "tool_input": {"file_path": "/workspace/one/x.py"}}, None, None
+    )
+    assert seen["roots"] == ("/workspace/one", "/workspace/two")

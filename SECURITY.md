@@ -86,6 +86,39 @@ decision still proceeds, loudly logged, with a counter. A full disk taking the
 whole system offline was judged worse than a gap in the record. If that trade
 is wrong for you, change it in `audit.py` — it is one branch.
 
+**Not established:** every tool decision is enforced inside a `PreToolUse` hook,
+and that hook runs under a timeout the **SDK** owns rather than Ricardi
+(`HookMatcher.timeout`, 60 seconds by default). Ricardi now sets it explicitly
+instead of inheriting it, but what the Claude Code CLI does when a hook exceeds
+it — permit or refuse — has not been verified here, and cannot be read from the
+Python package. There are two timeouts and Ricardi controls one of them.
+
+This is latent today: the in-process rules engine answers in microseconds and
+never approaches the bound. It stops being latent the moment a decision involves
+a network call. **If you replace the decision point with an external policy
+service, establish this before you rely on the list above.**
+
+## A command pattern bounds the string, not the behaviour
+
+`command_matches` is sound as a **deny** and unsound as an **allow**.
+
+It matches the flattened command text, so a prefix says nothing about what
+follows: an allow on `pytest*` also matches `pytest` with a second, destructive
+command chained after it. Denies do not have that problem — they are looking for
+something, and finding it anywhere is enough.
+
+It is worse than chaining, and this is the part to internalise before writing
+any allow: **the commands that look safest already execute code the repository
+controls.** `pytest` collects and runs `conftest.py`. `git log` honours
+`core.pager` and aliases out of `.git/config`. `make`, `npm test` and
+`cargo test` all execute project configuration. A tree you do not fully control
+contains no read-only shell command.
+
+So there is no sound way to grant "shell, but only harmless shell" with these
+rules, and an allowlist of command names should not be mistaken for one. If you
+need a boundary rather than a convention, mount the tree read-only and let the
+filesystem say no — that is the layer that holds.
+
 ## What Ricardi does not protect against
 
 - **Anything the agent reads can reach Slack.** An agent that can read a file

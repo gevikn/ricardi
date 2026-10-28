@@ -25,6 +25,12 @@ class AgentSpec:
 
     name: str
     cwd: str
+    # Every root this agent may touch. Defaults to `(cwd,)`, which is what one
+    # repository per agent means. Declared separately because the SDK takes one
+    # working directory and an agent may legitimately span several checkouts or
+    # worktrees -- and because pointing `cwd` at a parent directory to achieve
+    # that would quietly widen the bound policy intersects against.
+    roots: tuple[str, ...] = ()
     description: str = ""
     system_prompt: str = ""
     # A ceiling on one turn. Zero means no ceiling, which on a machine left
@@ -98,6 +104,28 @@ def load(path: str | os.PathLike[str]) -> Settings:
                     "grants everything. Remove it here."
                 )
 
+        declared = entry.get("roots")
+        if declared is None:
+            roots = (str(resolved),)
+        else:
+            if not isinstance(declared, list) or not declared:
+                raise ConfigError(
+                    f"Agent {name!r} has roots that is not a non-empty list. "
+                    "Leave it out to mean just the cwd."
+                )
+            found: list[str] = []
+            for one in declared:
+                root = Path(str(one)).expanduser()
+                # Same guard as cwd: a root that is not there bounds nothing,
+                # and a bound that silently covers everything is the failure
+                # this field exists to prevent.
+                if not root.is_dir():
+                    raise ConfigError(
+                        f"Agent {name!r} has a root {root}, which is not a directory."
+                    )
+                found.append(str(root))
+            roots = tuple(found)
+
         budget = float(entry.get("max_budget_usd", 0) or 0)
         turns = int(entry.get("max_turns", 0) or 0)
         if budget < 0 or turns < 0:
@@ -107,6 +135,7 @@ def load(path: str | os.PathLike[str]) -> Settings:
             AgentSpec(
                 name=name,
                 cwd=str(resolved),
+                roots=roots,
                 description=str(entry.get("description", "")).strip(),
                 system_prompt=str(entry.get("system_prompt", "")).strip(),
                 max_budget_usd=budget,

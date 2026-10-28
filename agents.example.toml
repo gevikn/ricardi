@@ -40,6 +40,20 @@ description = "the repository we are both working in"
 max_budget_usd = 2.00
 max_turns = 60
 cwd = "~/repos/shared"
+# Every root this agent may touch. Leave it out and it is just the cwd, which
+# is what one repository per agent means.
+#
+# It exists because policy's `path_under` is written per rule, so it is one
+# bound shared by every agent that rule covers. With two agents on a box, a
+# single wide read rule lets each one read the other's tree -- a hole you get
+# without writing it. Policy intersects every tool call against the roots
+# below, so a rule that forgot to bound its paths still cannot reach past them.
+#
+# Declare it when one agent legitimately spans several checkouts or worktrees.
+# Do not point `cwd` at a parent directory to achieve that: it would widen the
+# bound instead of listing it.
+#
+# roots = ["~/repos/shared", "~/repos/shared-docs"]
 system_prompt = """
 You work on this repository for a Slack channel with a few engineers in it.
 Be brief: two or three sentences unless asked for more. Say plainly when you
