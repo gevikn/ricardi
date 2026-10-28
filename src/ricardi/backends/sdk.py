@@ -31,6 +31,14 @@ DEFAULT_TURN_TIMEOUT = 600.0
 # answer. Long output belongs in a file the agent writes and names.
 MAX_ANSWER = 3500
 
+# How long the PreToolUse gate may take. The same as the SDK's own default, so
+# this changes no behaviour -- the point is that the deadline on the one check
+# that enforces everything is now a number this project chose and a test holds,
+# rather than one inherited from a dependency that could move. The in-process
+# rules engine answers in microseconds; a decision point that makes a network
+# call is what this bound is really for.
+GATE_TIMEOUT = 60.0
+
 # Result subtypes that mean a ceiling was reached rather than something broke.
 _CUT_SHORT = {
     "error_max_budget_usd": "this turn reached its spending limit",
@@ -165,6 +173,20 @@ class SdkBackend(AgentBackend):
                 "Install ricardi with the 'sdk' extra."
             ) from exc
 
+        options = self._options(live)
+        client = ClaudeSDKClient(options=ClaudeAgentOptions(**options))
+        await client.connect()
+        live.client = client
+        live.last_fault = ""
+        log.info("agent %s connected in %s", live.spec.name, live.spec.cwd)
+        return client
+
+    def _options(self, live: _Live) -> dict[str, object]:
+        """Everything the session is started with. Separate so it is testable.
+
+        A connection cannot be made in a test without spending money, but what
+        it would have been started with is exactly the part worth asserting.
+        """
         from claude_agent_sdk import HookMatcher
 
         spec = live.spec
@@ -184,19 +206,23 @@ class SdkBackend(AgentBackend):
         # gate built on it silently never runs for the tools you listed. Nothing
         # is passed here that could auto-approve, and settings files are not
         # loaded, so this hook is the only thing that can grant a tool.
-        options["hooks"] = {"PreToolUse": [HookMatcher(hooks=[self._gate(live)])]}
+        #
+        # The timeout is passed rather than inherited. Left unset the SDK
+        # applies its own default, so the deadline on the one check that
+        # enforces everything would be a number nobody here chose -- and what
+        # the CLI does when a hook exceeds it is not established. See
+        # SECURITY.md, "What fails closed, and what does not".
+        options["hooks"] = {
+            "PreToolUse": [
+                HookMatcher(hooks=[self._gate(live)], timeout=GATE_TIMEOUT)
+            ]
+        }
         options["setting_sources"] = []
         # Resuming keeps an agent's memory across a Ricardi restart. The
         # session id comes from the transcript on this same box.
         if live.session_id:
             options["resume"] = live.session_id
-
-        client = ClaudeSDKClient(options=ClaudeAgentOptions(**options))
-        await client.connect()
-        live.client = client
-        live.last_fault = ""
-        log.info("agent %s connected in %s", spec.name, spec.cwd)
-        return client
+        return options
 
     def _gate(self, live: _Live):
         """The PreToolUse hook: every tool call, checked before it runs.
@@ -228,6 +254,9 @@ class SdkBackend(AgentBackend):
                 tool=tool,
                 tool_input=dict(tool_input or {}),
                 flags=caller.flags,
+                # Passed on every tool call, so a rule that forgot to bound its
+                # paths cannot let this name reach another name's tree.
+                agent_roots=live.spec.roots,
             )
             try:
                 decision = await self._policy.decide(request)

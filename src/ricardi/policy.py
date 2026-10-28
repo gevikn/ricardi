@@ -71,6 +71,12 @@ class Request:
     text: str = ""
     # What the asker took away. Only ever subtracts -- see `_flag_refusal`.
     flags: tuple[str, ...] = ()
+    # Every root the agent behind this request is allowed to touch, from its own
+    # catalogue entry. A rule's `path_under` says what the *rules* permit; this
+    # says what *this name* reaches, and a decision needs both. Empty means
+    # unconstrained by this check, which only happens when no agent is behind
+    # the request -- `config.load` gives every agent at least one root.
+    agent_roots: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -291,6 +297,41 @@ class RulesPolicy:
                 reason=self._deny_reason(request, denies[0]),
                 rule=denies[0].name or "an unnamed deny",
             )
+
+        # After the denies, so a stranger who trips a named rule is recorded as
+        # that rule rather than as the default -- same refusal, and the audit
+        # line is the point. Before the allows, because a rule matches every
+        # dimension it does not name, so an allow that forgot `users` reads as
+        # "people in this channel" and means "anyone at all".
+        if not request.principal.known:
+            return Decision(
+                allow=False,
+                reason=self._default_reason(request),
+                rule="no roster entry",
+            )
+
+        # A name reaches its own roots and no further, whatever a rule's
+        # `path_under` says. `path_under` is written per rule, so it is one root
+        # shared by every agent that rule covers; with two names on a box that
+        # is a hole you get without writing it. Intersected, never alternative:
+        # a root outside what the rules allow still grants nothing.
+        #
+        # A tool naming no path is not bounded here. A shell command's reach
+        # cannot be read off its text, so the mount bounds that, not this.
+        if request.action == "tool" and request.agent_roots:
+            paths = _paths(request.tool_input)
+            if paths and not all(
+                any(_under(p, root) for root in request.agent_roots) for p in paths
+            ):
+                return Decision(
+                    allow=False,
+                    reason=(
+                        f"Not permitted here: "
+                        f"{summarise(request.tool, request.tool_input)}. That is "
+                        f"outside what this agent works on."
+                    ),
+                    rule="outside the agent's roots",
+                )
 
         allows = [r for r in matched if r.effect == "allow"]
         if allows:
