@@ -18,6 +18,7 @@ import sqlite3
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -142,16 +143,18 @@ class GrantStore:
 _GLOB_CHARS = frozenset("*?[")
 
 
-def seed_from_policy(store: GrantStore, policy: RulesPolicy, *, by: str) -> int:
+def seed_from_policy(store: GrantStore, policy: RulesPolicy, *,
+                     names: Sequence[str], by: str) -> int:
     """Grant `ask` to the roster on the names policy.toml already lets them ask.
 
     Once a missing grant means no access, the deploy that lands that would lock
     out everyone currently allowed. This writes down what policy.toml already
     permits so that deploy is not a flag day. It only ever subtracts: a rule
-    naming no `agents` matches every name, and seeding a wildcard would widen
-    what the file allows, so such a rule contributes nothing. The same goes for
-    a glob in `agents`, which is a pattern rather than a name anyone can be
-    granted. A rule scoped to `users` seeds only the roster members it names.
+    naming no `agents` matches every name, so it seeds each name in `names` (the
+    agent catalogue) one by one. That reproduces today's reach exactly; a
+    wildcard would also cover names added later, which must not be handed to
+    everyone. A glob in `agents` is a pattern rather than a name anyone can be
+    granted, so it is skipped. A rule scoped to `users` seeds only the roster members it names.
 
     Idempotent, and a triple with any history is left alone: a second run
     writes nothing, and cannot undo an admin's revoke. Returns rows written.
@@ -164,13 +167,14 @@ def seed_from_policy(store: GrantStore, policy: RulesPolicy, *, by: str) -> int:
     emails = list(dict.fromkeys(normalise(e) for e in policy.roster.values() if e.strip()))
     written = 0
     for rule in policy.rules:
-        if rule.effect != "allow" or "ask" not in rule.actions or not rule.agents:
+        if rule.effect != "allow" or "ask" not in rule.actions:
             continue
-        names = [n for n in rule.agents if n and not _GLOB_CHARS & set(n)]
+        pool = rule.agents or tuple(names)
+        allowed = [n for n in pool if n and not _GLOB_CHARS & set(n)]
         for email in emails:
             if rule.users and not _any_glob(email, rule.users):
                 continue
-            for name in names:
+            for name in allowed:
                 key = (email, name, "ask")
                 if key in seen:
                     continue
