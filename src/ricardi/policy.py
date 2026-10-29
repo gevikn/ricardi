@@ -17,7 +17,12 @@ import os
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+
+from ricardi.grants import GrantError
+
+if TYPE_CHECKING:
+    from ricardi.grants import GrantStore
 
 # The shell is named per platform, so a rule naming one covers nothing on the
 # other. Writing `tools = ["shell"]` covers whichever is in play, which is what
@@ -269,8 +274,12 @@ class RulesPolicy:
         self,
         rules: list[Rule] | tuple[Rule, ...] = (),
         roster: dict[str, str] | None = None,
+        grants: GrantStore | None = None,
     ):
         self.rules = tuple(rules)
+        # None means no grant check at all, which is how every deployment that
+        # has not opted in keeps deciding exactly as it did.
+        self.grants = grants
         # Slack user id -> email. The roster is the whole identity story: no
         # directory lookups, so no extra Slack scopes and nothing to cache.
         self.roster = dict(roster or {})
@@ -309,6 +318,25 @@ class RulesPolicy:
                 reason=self._default_reason(request),
                 rule="no roster entry",
             )
+
+        # After the denies and the roster refusal, for the same reason as both:
+        # a stranger or someone who tripped a named deny is audited as that, not
+        # as "no grant". Before the allows, so a grant row can only ever be one
+        # more thing a request must have; it has no `allow=True` to reach and
+        # cannot admit anything the rules would not. "ask" only -- tool rules
+        # are a later step, and a tool call is not an addressing of a name.
+        if self.grants is not None and request.action == "ask":
+            try:
+                held = self.grants.holds(request.principal.email, request.agent, "ask")
+            except GrantError:
+                # An unreadable store is a denial, never a guess either way.
+                held = False
+            if not held:
+                return Decision(
+                    allow=False,
+                    reason=self._default_reason(request),
+                    rule="no grant",
+                )
 
         # A name reaches its own roots and no further, whatever a rule's
         # `path_under` says. `path_under` is written per rule, so it is one root
