@@ -47,6 +47,12 @@ async def _serve(args: argparse.Namespace) -> int:
     # surface as a refusal to the first person who asks.
     policy = policy_mod.load(args.policy)
     per_minute, per_hour = policy_mod.load_limits(args.policy)
+    # Unlike threads.json and sessions.json, which shrug off corruption because
+    # they must not stop Ricardi answering, a corrupt grant store stops startup:
+    # serving with no grants would deny everyone and look exactly like a policy
+    # bug. A missing file is fine -- open() creates it empty, and every ask is
+    # refused until `ricardi grants seed` has run.
+    policy.grants = GrantStore.open(settings.state_dir / "grants.db")
     limits = Limits(per_minute=per_minute, per_hour=per_hour)
 
     # Order matters: the rate limiter wraps the rules so it can refuse a turn

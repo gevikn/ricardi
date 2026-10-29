@@ -128,6 +128,45 @@ write access.
    every time would fail the deploy that correctly changed nothing.
 7. **Rolls back** to the previous commit and image if that never arrives.
 
+### The first deploy that carries the grant store
+
+Who may address which agent is recorded in `state/grants.db`, and from the
+commit that wires it in, Ricardi checks it on every `ask`. A fresh store is
+empty, so the first deploy carrying this needs the seed run once on the box,
+**before the container restarts onto it**:
+
+```bash
+cd /opt/ricardi
+docker compose exec ricardi python -m ricardi.cli grants seed --by <your email>
+```
+
+Skip it and nothing fails loudly. Ricardi starts, the health gate passes, and
+every `ask` is refused until the store is seeded. That looks exactly like a
+policy bug, and you will go and read `policy.toml` for a mistake that is not
+there. A *missing* store is the intended pre-seed state and not an error; a
+*corrupt* one is different, and stops startup with a message naming the file.
+Unlike `threads.json` and `sessions.json`, which shrug off corruption so as not
+to stop Ricardi answering, serving with no grants would deny everyone silently.
+
+Seeding grants what `policy.toml` already permits and nothing else, and it is
+idempotent: running it again adds nothing that is already in force, so it is
+safe to repeat.
+
+It is `docker compose exec`, inside the running container, rather than
+`python -m ricardi.cli` against `state/` from the host. The store is SQLite in
+WAL mode, and WAL coordinates its readers and writers through shared memory
+that is only reliable between processes on the same side of a mount boundary.
+Here both sides are Linux on one filesystem, so the host route would probably
+work; running it in the container removes the question.
+
+One ordering trap. `exec` runs in the container that is up *now*, and an image
+from before the `grants` command existed does not have it. If the commits that
+add the command and the commit that wires the store in reach the box in a
+single deploy, there is no running container to seed from. Deploy the commit
+before the wiring first, seed, then deploy the wiring. The store is read live,
+so if you do get caught out, seeding straight after the new container is up
+also works; the cost is the seconds of refusals in between.
+
 It never touches `.env`, `policy.toml`, `agents.toml` or `state/`. Those are
 untracked, irreplaceable, and the reason the job operates on `/opt/ricardi`
 rather than checking out a fresh copy.
@@ -188,6 +227,8 @@ somewhere else.
 | "Refusing to deploy -- tests is 'none'" | No `tests` run exists for that SHA. Push it, or `gh workflow run tests.yml --ref <branch>` first. |
 | "Tracked files are modified" | Someone edited the checkout on the box. Resolve it there; the job will not discard it. |
 | Rebuild succeeds, health check fails | Read `docker compose logs ricardi`. A bad `policy.toml` fails at startup and never reaches Slack. |
+| Every `ask` refused, and `policy.toml` looks right | The grant store is empty. `docker compose exec ricardi python -m ricardi.cli grants list` shows nothing; run `grants seed` (see above). |
+| Startup fails naming `grants.db` | The grant store is corrupt. It is deliberately not ignored. Move the file aside and re-seed, or restore it from backup. |
 | Rolled back, and the rollback is also broken | The `:rollback` tag is one deep. `git checkout <older sha> && docker compose up -d --build` on the box. |
 | Runner gone after an OS upgrade | The service unit survives, the runner binary may need `./config.sh remove` and re-registering. |
 
