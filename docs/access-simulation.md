@@ -58,7 +58,7 @@ that — but two readings change:
 
 ## Holes — executed, reproducible
 
-### H1. Channel membership silently confers capability (also issue #23)
+### H1. Channel membership silently confers capability
 
 `ask-n1` names `channels` but not `users`. Unnamed dimensions match all, so
 **every member of that channel is permitted** — including `lurker`, who is not
@@ -83,7 +83,7 @@ Three fixes, cheapest first:
 
 Also a practice, not a code fix: **shared names belong in private channels.**
 
-### H2. A name can read every other name's tree
+### H2. A name can read every other name's tree (the path half of issue #23)
 
 `read-workspace` has `path_under = "/workspace"` and names no `agents`, so `n1`
 reads `/workspace/project2/secrets.py`. Latent today because only one name
