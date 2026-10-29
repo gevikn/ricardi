@@ -64,6 +64,17 @@ def test_an_allow_naming_no_agents_seeds_nothing_for_an_empty_catalogue(tmp_path
     assert s.history() == ()
 
 
+def test_an_allow_naming_no_actions_or_agents_seeds_every_catalogue_name(tmp_path):
+    # An empty `actions` matches every action in Rule.matches, ask included, so
+    # skipping it would lock out people the rule lets in today.
+    policy = RulesPolicy(rules=[_allow(actions=())], roster=ROSTER)
+    s = GrantStore.open(tmp_path / "g.db")
+    assert seed_from_policy(s, policy, names=NAMES, by="admin@b.com") == 4
+    for email in ("a@b.com", "c@d.com"):
+        for name in NAMES:
+            assert s.holds(email, name, "ask") is True
+
+
 def test_a_rule_naming_agents_is_not_widened_to_the_catalogue(tmp_path):
     policy = RulesPolicy(rules=[_allow("shared")], roster={"U1": "a@b.com"})
     s = GrantStore.open(tmp_path / "g.db")
