@@ -278,6 +278,8 @@ Two things to get right:
 | | |
 | :- | :- |
 | [`SECURITY.md`](SECURITY.md) | the threat model, and what silently disables enforcement |
+| [`docs/pair-programming.md`](docs/pair-programming.md) | inviting someone in, protecting `main`, and what more than three people means |
+| [`docs/comparison.md`](docs/comparison.md) | Ricardi, Anthropic's Channels, and when you want neither |
 | [`docs/running.md`](docs/running.md) | keeping it running, and which deployments survive a logout |
 | [`docs/practices.md`](docs/practices.md) | how to scope agents and review policy |
 | [`docs/roadmap.md`](docs/roadmap.md) | what is planned, including Teams |
