@@ -7,7 +7,9 @@ pass so no grant can produce an allow the rules would not have.
 
 from __future__ import annotations
 
-from ricardi.grants import GrantStore
+import pytest
+
+from ricardi.grants import GrantError, GrantStore
 from ricardi.policy import Request, Rule, RulesPolicy
 
 ALLOW_ASK = Rule(effect="allow", name="asking", actions=("ask",))
@@ -112,11 +114,12 @@ async def test_no_grant_store_behaves_as_before():
     assert (await policy.decide(_ask(policy))).allow is True
 
 
-async def test_an_unreadable_store_refuses_rather_than_guesses(tmp_path):
+async def test_an_unreadable_store_raises_rather_than_reading_as_no_grant(tmp_path):
+    # Folded into "no grant" it would be audited as nobody ever being let in;
+    # raised, the audit and app layers record a policy error with its text.
     store = _store(tmp_path)
     store.add(person="a@b.com", name="shared", verb="ask", by="admin")
     policy = RulesPolicy(rules=[ALLOW_ASK], roster=ROSTER, grants=store)
     store.close()
-    d = await policy.decide(_ask(policy))
-    assert d.allow is False
-    assert d.rule == "no grant"
+    with pytest.raises(GrantError):
+        await policy.decide(_ask(policy))
