@@ -12,6 +12,7 @@ from pathlib import Path
 
 from ricardi import config, policy as policy_mod, readiness
 from ricardi.audit import AuditedPolicy, AuditLog
+from ricardi.grants import GrantError, GrantStore, normalise, seed_from_policy
 from ricardi.limits import Limits, RateLimited
 from ricardi.app import Ricardi
 from ricardi.store import SessionIds, ThreadBindings
@@ -151,6 +152,42 @@ def log_handlers(log_file: str) -> list[logging.Handler]:
     return handlers
 
 
+def _grants_command(args: argparse.Namespace) -> int:
+    """Drive the grant store by hand: the admin's half of the access model."""
+    # An explicit --state-dir overrides the same value the settings carry; it
+    # is not a second way to find state/. Settings are loaded only when
+    # needed, so list/add/revoke work against a store without a catalogue.
+    settings = None
+    if args.state_dir:
+        state_dir = Path(args.state_dir).expanduser()
+    else:
+        settings = config.load(args.agents)
+        state_dir = settings.state_dir
+    # Opened with the rest of the failure paths: a corrupt store raises
+    # GrantError, which main() reports and turns into a non-zero exit.
+    store = GrantStore.open(state_dir / "grants.db")
+    try:
+        if args.action == "list":
+            for g in store.current():
+                print(f"{g.person}	{g.name}	{g.verb}	by {g.by}	{g.at}")
+        elif args.action == "seed":
+            settings = settings or config.load(args.agents)
+            roster = policy_mod.load(args.policy)
+            n = seed_from_policy(
+                store, roster, names=[a.name for a in settings.agents], by=args.by
+            )
+            print(f"seeded {n} grant(s)")
+        else:
+            granted = args.action == "add"
+            store.add(person=args.person, name=args.name, verb=args.verb,
+                      by=args.by, granted=granted)
+            word = "granted" if granted else "revoked"
+            print(f"{word} {args.verb} on {args.name} for {normalise(args.person)}")
+    finally:
+        store.close()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="ricardi", description=__doc__)
     here = Path(__file__).resolve().parents[2]
@@ -193,6 +230,31 @@ def main(argv: list[str] | None = None) -> int:
              "perfectly and leaves nothing to read",
     )
     parser.add_argument("--verbose", action="store_true")
+    # Optional: the container launches `ricardi` with flags and no subcommand,
+    # and that must keep meaning "serve".
+    sub = parser.add_subparsers(dest="command")
+    grants = sub.add_parser("grants", help="inspect and change who has been granted what")
+    state_help = ("override the state directory (default: derived from --agents, "
+                  "as audit.jsonl and sessions.json are)")
+    grants.add_argument("--state-dir", default="", help=state_help)
+    # Also accepted after the action (`grants list --state-dir X`), which is
+    # where people type it. SUPPRESS keeps an action parser's unset default
+    # from overwriting a value given before it.
+    after = argparse.ArgumentParser(add_help=False)
+    after.add_argument("--state-dir", default=argparse.SUPPRESS, help=state_help)
+    actions = grants.add_subparsers(dest="action", required=True)
+    actions.add_parser("list", parents=[after],
+                       help="print the grants in force (not the history)")
+    actions.add_parser("seed", parents=[after],
+                       help="grant what policy.toml already permits").add_argument(
+        "--by", required=True, help="who is recording this")
+    for verb_name, text in (("add", "grant one person one verb on one agent"),
+                            ("revoke", "supersede a grant; the history is kept")):
+        one = actions.add_parser(verb_name, parents=[after], help=text)
+        one.add_argument("--person", required=True, help="email")
+        one.add_argument("--name", required=True, help="agent name")
+        one.add_argument("--verb", required=True)
+        one.add_argument("--by", required=True, help="who is recording this")
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -203,8 +265,10 @@ def main(argv: list[str] | None = None) -> int:
     _load_env(Path(args.env))
 
     try:
+        if args.command == "grants":
+            return _grants_command(args)
         return asyncio.run(_serve(args))
-    except (config.ConfigError, policy_mod.PolicyError) as exc:
+    except (config.ConfigError, policy_mod.PolicyError, GrantError) as exc:
         print(f"ricardi: {exc}", file=sys.stderr)
         return 2
     except KeyboardInterrupt:
