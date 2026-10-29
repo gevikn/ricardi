@@ -19,8 +19,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from ricardi.grants import GrantError
-
 if TYPE_CHECKING:
     from ricardi.grants import GrantStore
 
@@ -326,12 +324,10 @@ class RulesPolicy:
         # cannot admit anything the rules would not. "ask" only -- tool rules
         # are a later step, and a tool call is not an addressing of a name.
         if self.grants is not None and request.action == "ask":
-            try:
-                held = self.grants.holds(request.principal.email, request.agent, "ask")
-            except GrantError:
-                # An unreadable store is a denial, never a guess either way.
-                held = False
-            if not held:
+            # A store that fails here raises on purpose: the layers above record
+            # a policy error with its text and refuse, whereas folding it into
+            # "no grant" would audit a broken store as nobody ever being let in.
+            if not self.grants.holds(request.principal.email, request.agent, "ask"):
                 return Decision(
                     allow=False,
                     reason=self._default_reason(request),
