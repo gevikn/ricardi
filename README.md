@@ -3,9 +3,26 @@
 [![tests](https://github.com/gevikn/ricardi/actions/workflows/tests.yml/badge.svg)](https://github.com/gevikn/ricardi/actions/workflows/tests.yml)
 
 
-A Slack bot that is a proxy to Claude Code agents running on a box. Humans and
-Ricardi share a channel; Ricardi holds the agents and carries messages both
-ways.
+You are in a Claude Code session and you want one other person in it with you.
+Right now you are the wire between them: you read what came back, you say it
+out loud, you listen, you translate, you type, you wait, you read it again.
+They cannot **see** it and they cannot **touch** it — and screen-sharing only
+ever fixed the first half.
+
+Ricardi puts the session in a Slack channel, where your pair reads the exchange
+and types into it. Because it runs as a service on a box rather than hanging
+off your laptop, they can move the work forward **when you are not there at
+all** — which is what stops you being the bottleneck as well as the wire.
+
+What they may do while you are asleep is the other half of the design. A roster
+gives each person a tier and every tool call is decided against it, so you can
+invite someone you trust *partially* — a junior engineer, a product lead, a
+technical sales engineer — instead of choosing between all and nothing.
+
+Mechanically: humans and Ricardi share a channel; Ricardi holds the agents and
+carries messages both ways. [`docs/pair-programming.md`](docs/pair-programming.md)
+is how to run one, and [`docs/comparison.md`](docs/comparison.md) is honest
+about when Anthropic's own Channels is the better answer and this is not.
 
 > **Everyone on the roster can run code on your machine.** That is what Ricardi
 > is for rather than a flaw in it — and its safety layers err toward preventing
