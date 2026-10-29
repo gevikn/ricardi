@@ -19,6 +19,10 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ricardi.policy import RulesPolicy
 
 
 class GrantError(Exception):
@@ -133,3 +137,44 @@ class GrantStore:
                 return self._conn.execute(sql, params).fetchall()
         except sqlite3.DatabaseError as exc:
             raise GrantError(f"cannot read the grant store: {exc}") from exc
+
+
+_GLOB_CHARS = frozenset("*?[")
+
+
+def seed_from_policy(store: GrantStore, policy: RulesPolicy, *, by: str) -> int:
+    """Grant `ask` to the roster on the names policy.toml already lets them ask.
+
+    Once a missing grant means no access, the deploy that lands that would lock
+    out everyone currently allowed. This writes down what policy.toml already
+    permits so that deploy is not a flag day. It only ever subtracts: a rule
+    naming no `agents` matches every name, and seeding a wildcard would widen
+    what the file allows, so such a rule contributes nothing. The same goes for
+    a glob in `agents`, which is a pattern rather than a name anyone can be
+    granted. A rule scoped to `users` seeds only the roster members it names.
+
+    Idempotent, and a triple with any history is left alone: a second run
+    writes nothing, and cannot undo an admin's revoke. Returns rows written.
+    """
+    # Imported here: policy has no reason to depend on grants, and grants only
+    # needs policy's matching when it seeds.
+    from ricardi.policy import _any_glob
+
+    seen = {(g.person, g.name, g.verb) for g in store.history()}
+    emails = list(dict.fromkeys(normalise(e) for e in policy.roster.values() if e.strip()))
+    written = 0
+    for rule in policy.rules:
+        if rule.effect != "allow" or "ask" not in rule.actions or not rule.agents:
+            continue
+        names = [n for n in rule.agents if n and not _GLOB_CHARS & set(n)]
+        for email in emails:
+            if rule.users and not _any_glob(email, rule.users):
+                continue
+            for name in names:
+                key = (email, name, "ask")
+                if key in seen:
+                    continue
+                store.add(person=email, name=name, verb="ask", by=by)
+                seen.add(key)
+                written += 1
+    return written
