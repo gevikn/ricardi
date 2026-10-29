@@ -167,7 +167,7 @@ def seed_from_policy(store: GrantStore, policy: RulesPolicy, *,
     emails = list(dict.fromkeys(normalise(e) for e in policy.roster.values() if e.strip()))
     written = 0
     for rule in policy.rules:
-        if rule.effect != "allow" or "ask" not in rule.actions:
+        if rule.effect != "allow" or (rule.actions and "ask" not in rule.actions):
             continue
         pool = rule.agents or tuple(names)
         allowed = [n for n in pool if n and not _GLOB_CHARS & set(n)]
