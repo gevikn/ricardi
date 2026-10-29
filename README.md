@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/ricardi-dark.png">
+    <img src="assets/ricardi.png" alt="Ricardi" width="220">
+  </picture>
+</p>
+
 # Ricardi
 
 [![tests](https://github.com/gevikn/ricardi/actions/workflows/tests.yml/badge.svg)](https://github.com/gevikn/ricardi/actions/workflows/tests.yml)
