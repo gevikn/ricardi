@@ -77,17 +77,49 @@ jobs:
         run: |
           set -euo pipefail
           sha='${{ steps.target.outputs.sha }}'
-          verdict=$(curl -sS \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$sha&per_page=100" \
-            | jq -r '[.workflow_runs[] | select(.name == "tests")]
-                     | sort_by(.created_at) | last | .conclusion // "none"')
+          # Wait for a verdict rather than take the absence of one for an
+          # answer. A rebase-merge produces a SHA no pull-request check ever
+          # ran against, so the only run that can satisfy this gate is the
+          # `push: [main]` run the merge itself starts -- and for its first
+          # minute that run has a status and no conclusion. Reading it as "no
+          # run" refuses a healthy deploy and reports the tests as 'none',
+          # which sends you looking for a run that is in fact running.
+          #
+          # Bounded by attempts rather than by the clock: 45 tries, 20s apart.
+          verdict=none
+          for _ in $(seq 1 45); do
+            verdict=$(curl -sS \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$sha&per_page=100" \
+              | jq -r '[.workflow_runs[] | select(.name == "tests")]
+                       | sort_by(.created_at) | last
+                       | if . == null then "none" else (.conclusion // .status) end')
+            case "$verdict" in
+              queued|in_progress|pending|waiting|requested|action_required)
+                echo "tests on $sha: $verdict -- waiting"
+                sleep 20
+                ;;
+              *) break ;;
+            esac
+          done
           echo "tests on $sha: $verdict"
           if [ "$verdict" != "success" ]; then
             echo "::error::Refusing to deploy $sha -- the tests workflow is '$verdict' on it."
-            echo "A deployer that merely follows a branch will ship a commit whose"
-            echo "tests failed. Re-run deploy with skip_test_gate if you mean to."
+            case "$verdict" in
+              queued|in_progress|pending|waiting|requested|action_required)
+                echo "Still '$verdict' after about fifteen minutes. Look at the run"
+                echo "itself, then start this deploy again -- nothing has changed yet."
+                ;;
+              none)
+                echo "No tests run exists for that SHA at all. Push it, or run"
+                echo "'gh workflow run tests.yml --ref <branch>' first."
+                ;;
+              *)
+                echo "A deployer that merely follows a branch will ship a commit whose"
+                echo "tests failed. Re-run deploy with skip_test_gate if you mean to."
+                ;;
+            esac
             exit 1
           fi
 

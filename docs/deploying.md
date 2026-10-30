@@ -235,7 +235,7 @@ somewhere else.
 | Symptom | Cause |
 |---|---|
 | Job queues forever | No runner with both labels is online. `svc.sh status` on the box. |
-| "Refusing to deploy -- tests is 'none'" | No `tests` run exists for that SHA. Push it, or `gh workflow run tests.yml --ref <branch>` first. |
+| "Refusing to deploy -- tests is 'none'" | No `tests` run exists for that SHA at all. Push it, or `gh workflow run tests.yml --ref <branch>` first. The gate waits up to ~15 minutes for a run already in flight, so this means absence, not slowness. |
 | "Tracked files are modified" | Someone edited the checkout on the box. Resolve it there; the job will not discard it. |
 | Rebuild succeeds, health check fails | Read `docker compose logs ricardi`. A bad `policy.toml` fails at startup and never reaches Slack. |
 | Every `ask` refused, and `policy.toml` looks right | The grant store is empty. `docker compose exec ricardi python -m ricardi.cli grants list` shows nothing; run `grants seed` (see above). |
