@@ -82,11 +82,51 @@ def test_a_rule_naming_agents_is_not_widened_to_the_catalogue(tmp_path):
     assert s.holds("a@b.com", "other", "ask") is False
 
 
-def test_a_glob_in_agents_is_not_a_name_and_is_not_granted(tmp_path):
-    policy = RulesPolicy(rules=[_allow("proj-*", "shared")], roster=ROSTER)
+def test_a_glob_in_agents_is_expanded_against_the_catalogue(tmp_path):
+    # `agents` is globbed in Rule.matches, so such a rule already permits every
+    # catalogue name it matches. Dropping the pattern would seed nothing and
+    # lock those names out on the deploy that starts enforcing grants.
+    policy = RulesPolicy(rules=[_allow("proj-*")], roster=ROSTER)
     s = GrantStore.open(tmp_path / "g.db")
-    assert seed_from_policy(s, policy, names=NAMES, by="admin@b.com") == 2
-    assert {g.name for g in s.history()} == {"shared"}
+    names = ["proj-api", "proj-web", "other"]
+    assert seed_from_policy(s, policy, names=names, by="admin@b.com") == 4
+    assert {g.name for g in s.history()} == {"proj-api", "proj-web"}
+    # Expanded, never stored as a pattern: a name added later is not covered.
+    assert s.holds("a@b.com", "proj-*", "ask") is False
+    assert s.holds("a@b.com", "other", "ask") is False
+
+
+def test_a_glob_matching_nothing_in_the_catalogue_seeds_nothing(tmp_path):
+    policy = RulesPolicy(rules=[_allow("proj-*")], roster=ROSTER)
+    s = GrantStore.open(tmp_path / "g.db")
+    assert seed_from_policy(s, policy, names=NAMES, by="admin@b.com") == 0
+
+
+def test_an_allow_carrying_tool_conditions_seeds_nothing(tmp_path):
+    # None of these can match an `ask`: request.tool is "" and tool_input is
+    # empty, so `tools`, `path_under`, `path_matches` and `command_matches`
+    # each fail in Rule.matches. Such a rule permits no asking, and seeding it
+    # would put rows in `grants list` that are not in force.
+    for condition in (
+        {"tools": ("Read",)},
+        {"path_under": "/workspace"},
+        {"path_matches": ("*/x",)},
+        {"command_matches": ("ls *",)},
+    ):
+        policy = RulesPolicy(
+            rules=[Rule(name="r", effect="allow", **condition)], roster=ROSTER
+        )
+        s = GrantStore.open(tmp_path / f"{next(iter(condition))}.db")
+        assert seed_from_policy(s, policy, names=NAMES, by="admin@b.com") == 0
+
+
+def test_a_mixed_case_catalogue_name_stays_idempotent(tmp_path):
+    # The store folds the name, so the second run must recognise its own rows.
+    policy = RulesPolicy(rules=[_allow()], roster={"U1": "a@b.com"})
+    s = GrantStore.open(tmp_path / "g.db")
+    assert seed_from_policy(s, policy, names=["Shared"], by="admin@b.com") == 1
+    assert seed_from_policy(s, policy, names=["Shared"], by="admin@b.com") == 0
+    assert s.holds("a@b.com", "Shared", "ask") is True
 
 
 def test_a_rule_scoped_to_users_grants_only_those_users(tmp_path):

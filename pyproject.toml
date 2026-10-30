@@ -51,11 +51,15 @@ packages = ["src/ricardi"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# "." so a test can import a helper from a sibling test module. `python -m
-# pytest` puts the working directory on sys.path for free and bare `pytest`
-# does not, so without this a cross-test import passes locally and fails in
-# CI, which runs `uv run pytest`.
-pythonpath = ["src", "."]
+# Not ".". The repo root holds a `requests/` directory (the shared-session
+# request files), and on sys.path that shadows the `requests` package as an
+# empty namespace package -- so the day a dependency imports it, the failure
+# is a ModuleNotFoundError inside third-party code rather than a clean "not
+# installed". A test importing a helper from a sibling test module needs no
+# entry here either: tests/ has no __init__.py, so pytest's default prepend
+# import mode already puts it on sys.path, under bare `pytest` and
+# `uv run pytest` alike. Import the sibling unqualified.
+pythonpath = ["src"]
 asyncio_mode = "auto"
 markers = [
     "live: spends real tokens against the Claude Agent SDK; opt in with RICARDI_LIVE=1",

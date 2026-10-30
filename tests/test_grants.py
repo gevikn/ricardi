@@ -42,6 +42,24 @@ def test_email_case_and_whitespace_do_not_make_a_second_person(tmp_path):
     assert s.holds("gevik@example.com", "shared", "ask") is True
 
 
+def test_the_name_and_verb_case_do_not_make_a_second_grant(tmp_path):
+    # app._resolve hands decide() the catalogue's spelling, and `grants add`
+    # takes whatever was typed. If those differ only in case the grant would be
+    # recorded, listed as in force, and still leave the person refused.
+    s = GrantStore.open(tmp_path / "grants.db")
+    s.add(person="a@b.com", name=" Ricardi ", verb="Ask", by="o@b.com")
+    assert s.holds("a@b.com", "ricardi", "ask") is True
+    assert s.holds("a@b.com", "RICARDI", "ASK") is True
+    assert [(g.name, g.verb) for g in s.current()] == [("ricardi", "ask")]
+
+
+def test_a_revoke_typed_in_another_case_still_supersedes(tmp_path):
+    s = GrantStore.open(tmp_path / "grants.db")
+    s.add(person="a@b.com", name="ricardi", verb="ask", by="o@b.com")
+    s.add(person="a@b.com", name="Ricardi", verb="ASK", by="o@b.com", granted=False)
+    assert s.holds("a@b.com", "ricardi", "ask") is False
+
+
 def test_a_missing_file_is_created_and_an_empty_one_is_valid(tmp_path):
     # Review Focus 3.
     path = tmp_path / "nested" / "grants.db"
