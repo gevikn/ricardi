@@ -239,17 +239,83 @@ somewhere else.
 | "Tracked files are modified" | Someone edited the checkout on the box. Resolve it there; the job will not discard it. |
 | Rebuild succeeds, health check fails | Read `docker compose logs ricardi`. A bad `policy.toml` fails at startup and never reaches Slack. |
 | Every `ask` refused, and `policy.toml` looks right | The grant store is empty. `docker compose exec ricardi python -m ricardi.cli grants list` shows nothing; run `grants seed` (see above). |
-| Startup fails naming `grants.db` | The grant store is corrupt. It is deliberately not ignored. Recover it by hand; see below. There is no backup to restore from. |
+| Startup fails naming `grants.db` | The grant store is corrupt. It is deliberately not ignored. Restore the newest snapshot from `state/backups/`, or recover by hand; see below. |
 | Rolled back, and the rollback is also broken | The `:rollback` tag is one deep. `git checkout <older sha> && docker compose up -d --build` on the box. |
 | Runner gone after an OS upgrade | The service unit survives, the runner binary may need `./config.sh remove` and re-registering. |
 
+### Backing up the grant store
+
+`state/grants.db` is the only thing on this box git cannot rebuild. A recorded
+revoke is not re-derivable from `policy.toml` -- that is the entire point of
+having a mutable layer -- so losing the file loses the answer to "who let them
+in, and when".
+
+Do not back it up by copying the file. The store is in WAL mode and the
+auto-checkpoint does not fire until the write-ahead log is about a thousand
+pages, so a store with a handful of rows keeps every one of them, and the
+schema, in `grants.db-wal`. A copy of `grants.db` alone opens without
+complaint and contains no `grant_log` table at all. That was measured on this
+box, not reasoned about.
+
+So there is a verb that goes through sqlite's backup API, reopens the copy,
+runs `integrity_check`, counts its rows against the source, and deletes the
+copy rather than keep one that came back short:
+
+```bash
+docker compose exec -T ricardi python -m ricardi.cli grants backup --keep 14
+```
+
+On a timer, as the `ricardi` user (`crontab -e`; no sudo needed, and a system
+unit would need it):
+
+```cron
+17 3 * * * cd /opt/ricardi && /usr/bin/flock -n /tmp/ricardi-grants-backup.lock docker compose exec -T ricardi python -m ricardi.cli grants backup --keep 14 >> /opt/ricardi/state/grants-backup.log 2>&1
+```
+
+`flock` because two snapshots at once is pointless rather than harmful, and
+cron is the one caller that can overlap itself. It writes to
+`state/backups/grants-<stamp>.db` and prunes to the newest 14 -- a few hundred
+kilobytes in total, on the same disk.
+
+Each snapshot is deliberately **one file**: it is taken out of WAL mode before
+it is closed, so there is no `-wal` or `-shm` to forget. Copying a snapshot is
+a copy of exactly one file, which is the thing that is not true of the live
+store.
+
+**Same disk is the limit of what this buys you.** It covers corruption, a bad
+migration and a mistaken delete; it does not survive the disk. Getting a copy
+off the box needs either a backup credential living on the box, or a pull from
+a machine that is already authenticated -- SSH here is behind Cloudflare
+Access, whose token is interactive and expires daily, so an unattended nightly
+pull cannot work by design. Until that is decided, pull one when you are at
+the keyboard:
+
+```bash
+scp "ricardi-home:/opt/ricardi/state/backups/$(ssh ricardi-home 'ls -1 /opt/ricardi/state/backups/grants-*.db | tail -1' | xargs basename)" .
+```
+
 ### A corrupt grant store
 
-Be clear about what the options are, because the obvious one is a trap. There
-is no backup of `state/grants.db`: the restic configuration backs up the
-owner's laptop, not `/opt/ricardi` on the box, and `state/` is the one
-directory the deploy promises never to touch, so nothing else copies it either.
-Do not go looking for a copy that does not exist.
+Be clear about what the options are, because the obvious one is a trap. Check
+`state/backups/` first: if the timer above is installed, the newest snapshot is
+at most a day old, and restoring it is a file copy with the container stopped.
+Verify what you are about to restore before you trust it: a snapshot taken
+after the damage is not a recovery. Read it on its own, by the name the store
+expects, in a directory of its own:
+
+```bash
+docker compose exec -T ricardi sh -c 'mkdir -p /tmp/inspect   && cp /app/state/backups/grants-<stamp>.db /tmp/inspect/grants.db   && python -m ricardi.cli grants list --state-dir /tmp/inspect'
+```
+
+Pointing `--state-dir` at `state/backups` itself does *not* read a snapshot.
+It looks for `grants.db`, does not find one, and creates a new empty store
+there -- which prints nothing and looks exactly like a snapshot with no
+grants in it.
+
+If there is no snapshot, say so out loud rather than reaching for the obvious
+move. The restic configuration backs up the owner's laptop, not `/opt/ricardi`
+on the box, and `state/` is the one directory the deploy promises never to
+touch, so without the timer nothing copies it at all.
 
 Moving the file aside and re-seeding works mechanically and does damage
 quietly. `grants seed` skips any person, agent and verb that has *any* history,

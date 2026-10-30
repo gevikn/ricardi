@@ -17,6 +17,7 @@ from ricardi.grants import (
     GrantStore,
     normalise,
     normalise_name,
+    backup_store,
     seed_from_policy,
 )
 from ricardi.limits import Limits, RateLimited
@@ -197,6 +198,11 @@ def _grants_command(args: argparse.Namespace) -> int:
                 store, roster, names=[a.name for a in settings.agents], by=args.by
             )
             print(f"seeded {n} grant(s)")
+        elif args.action == "backup":
+            into = Path(args.to).expanduser() if args.to else state_dir / "backups"
+            dest = backup_store(store, into, keep=args.keep)
+            print(f"snapshot {dest} ({len(store.history())} row(s)), "
+                  f"keeping the newest {args.keep}")
         else:
             granted = args.action == "add"
             store.add(person=args.person, name=args.name, verb=args.verb,
@@ -272,6 +278,13 @@ def main(argv: list[str] | None = None) -> int:
     actions.add_parser("seed", parents=[after],
                        help="grant what policy.toml already permits").add_argument(
         "--by", required=True, help="who is recording this")
+    snapshot = actions.add_parser(
+        "backup", parents=[after],
+        help="write a verified snapshot of the store, and prune old ones")
+    snapshot.add_argument("--to", default="",
+                          help="where snapshots go (default: <state-dir>/backups)")
+    snapshot.add_argument("--keep", type=int, default=14,
+                          help="how many to keep (default: 14; 0 keeps every one)")
     for verb_name, text in (("add", "grant one person one verb on one agent"),
                             ("revoke", "supersede a grant; the history is kept")):
         one = actions.add_parser(verb_name, parents=[after], help=text)
