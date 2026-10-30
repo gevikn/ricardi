@@ -209,7 +209,15 @@ channel. Many writers, constantly changing. **SQLite in `state/`.** Standard
 library, no new service, no port, no credential, so it keeps the *"No ports.
 Socket Mode dials out, so nothing needs to listen"* property that is most of why
 this deployment is simple. Real transactions, so a grant and its audit row commit
-together. One file, so restic already backs it up. `.dump` gives a text diff.
+together. One file, so a snapshot is a single `.backup` call. `.dump` gives a
+text diff.
+
+**Correction, 2026-10-30:** an earlier version of this line said *"so restic
+already backs it up"*. That was false for this deployment and stayed false
+until the day the store became load-bearing: the restic sources cover the
+owner's laptop, not `/opt/ricardi`, and `state/` is the one directory the
+deploy promises never to touch, so nothing else copied it either. Backing it
+up is `ricardi grants backup` on a timer; see `docs/deploying.md`.
 
 The invariant that makes runtime mutation safe is one this codebase already
 states three times — in the flags, in provisioning, and in tiers: **the mutable

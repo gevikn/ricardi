@@ -83,6 +83,32 @@ def _grant(row: tuple) -> Grant:
     return Grant(row[0], row[1], row[2], bool(row[3]), row[4], row[5])
 
 
+_SNAPSHOT_PREFIX = "grants-"
+
+
+def _copy_database(conn: sqlite3.Connection, dest: Path) -> None:
+    """sqlite's own backup API, which is the only thing that reads the WAL.
+
+    Copying `grants.db` as a file is the obvious move and it silently loses
+    everything: the auto-checkpoint does not fire until the WAL is about a
+    thousand pages, so a store with a handful of rows keeps all of them --
+    and the schema -- in `grants.db-wal`. The copy opens fine and reports no
+    grants. This goes through sqlite instead, which takes the read lock it
+    needs and walks the live pages.
+    """
+    target = sqlite3.connect(dest)
+    try:
+        conn.backup(target)
+        # And out of WAL mode on the way out, so the snapshot is one file. The
+        # backup inherits the source's journal mode, which would leave a -wal
+        # and a -shm beside every snapshot -- reproducing, in the backup, the
+        # exact three-file trap that makes copying the live store useless.
+        target.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        target.execute("PRAGMA journal_mode=DELETE")
+    finally:
+        target.close()
+
+
 class GrantStore:
     def __init__(self, conn: sqlite3.Connection):
         self._conn = conn
@@ -152,6 +178,19 @@ class GrantStore:
         rows = self._query(f"SELECT {_COLUMNS} FROM grant_log ORDER BY id")
         return tuple(_grant(r) for r in rows)
 
+    def backup_to(self, dest: str | os.PathLike[str]) -> None:
+        """Copy the live store, WAL and all, to `dest`.
+
+        Under the same lock as every other use of the connection: sqlite3
+        connections are not safe to use concurrently, and a snapshot taken
+        beside a seeding writer is exactly when that would bite.
+        """
+        try:
+            with self._lock:
+                _copy_database(self._conn, Path(dest))
+        except (sqlite3.DatabaseError, OSError) as exc:
+            raise GrantError(f"cannot snapshot the grant store: {exc}") from exc
+
     def close(self) -> None:
         with self._lock:
             self._conn.close()
@@ -220,3 +259,76 @@ def seed_from_policy(store: GrantStore, policy: RulesPolicy, *,
                 seen.add(key)
                 written += 1
     return written
+
+
+def backup_store(store: GrantStore, into: str | os.PathLike[str], *,
+                 stamp: str = "", keep: int = 14) -> Path:
+    """Write a verified snapshot of `store` into `into`, and prune old ones.
+
+    This is the one piece of state on the box that git cannot rebuild. A
+    revoke that was recorded is not re-derivable from policy.toml -- that is
+    the whole point of the mutable layer -- so losing the file loses the
+    answer to "who let them in, and when".
+
+    Verified, because an unchecked backup is a rumour: the copy is reopened,
+    asked for `integrity_check`, and counted against the source. A snapshot
+    that comes back short is deleted rather than kept, since a file that
+    restores cleanly with rows missing is worse than no file at all -- it is
+    discovered on the day it is needed. More rows than expected is fine: a
+    grant recorded while the copy ran belongs in it.
+
+    Returns the snapshot's path. Raises GrantError and leaves no file behind
+    if anything about it cannot be trusted.
+    """
+    expected = len(store.history())
+    folder = Path(into)
+    stamp = stamp or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    dest = folder / f"{_SNAPSHOT_PREFIX}{stamp}.db"
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        # A second run in the same second is a re-run, not a second snapshot.
+        dest.unlink(missing_ok=True)
+    except OSError as exc:
+        raise GrantError(f"cannot write snapshots into {folder}: {exc}") from exc
+
+    store.backup_to(dest)
+
+    try:
+        check = sqlite3.connect(f"file:{dest.as_posix()}?mode=ro", uri=True)
+        try:
+            verdict = check.execute("PRAGMA integrity_check").fetchone()[0]
+            rows = check.execute("SELECT COUNT(*) FROM grant_log").fetchone()[0]
+        finally:
+            check.close()
+    except sqlite3.DatabaseError as exc:
+        dest.unlink(missing_ok=True)
+        raise GrantError(f"the snapshot at {dest} is not a readable store: {exc}") from exc
+
+    if verdict != "ok" or rows < expected:
+        dest.unlink(missing_ok=True)
+        raise GrantError(
+            f"the snapshot kept {rows} of {expected} rows (integrity: {verdict}), "
+            "so it was discarded"
+        )
+
+    _prune(folder, keep)
+    return dest
+
+
+def _prune(folder: Path, keep: int) -> None:
+    """Drop all but the newest `keep` snapshots. `keep` of 0 or less keeps all.
+
+    Scoped to the names this module writes, which sort by their own stamp. A
+    file someone put here by hand before a migration is not ours to delete.
+    """
+    if keep <= 0:
+        return
+    snapshots = sorted(folder.glob(f"{_SNAPSHOT_PREFIX}*.db"))
+    for old in snapshots[:-keep]:
+        try:
+            old.unlink()
+        except OSError as exc:
+            # The snapshot is already written and verified; say what is true.
+            raise GrantError(
+                f"the snapshot was written, but {old} could not be pruned: {exc}"
+            ) from exc
