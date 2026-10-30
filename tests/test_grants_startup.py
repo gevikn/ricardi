@@ -13,7 +13,11 @@ import pytest
 from ricardi import cli, readiness
 from ricardi.grants import GrantError, GrantStore
 
-from tests.test_cli_readiness import _args
+# Unqualified: tests/ has no __init__.py, so pytest's prepend import mode has
+# already put this directory on sys.path. Going through a `tests.` package
+# would need the repo root there too, where `requests/` shadows the package of
+# the same name.
+from test_cli_readiness import _args
 
 
 async def _until_ready(state):

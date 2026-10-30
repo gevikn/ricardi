@@ -257,8 +257,16 @@ and discarding the file discards that history, so the re-seed writes a fresh
 grant for everyone `policy.toml` permits, including anyone an admin had
 revoked. It prints a success count and nothing records that revocations were
 undone. If you must do it, first list who had been revoked from whatever you
-remember or can salvage (`sqlite3 grants.db` may still read parts of a damaged
-file), and run `grants revoke` for each straight after seeding.
+remember or can salvage, and run `grants revoke` for each straight after
+seeding.
+
+Move all three files when you move it: `grants.db`, `grants.db-wal` and
+`grants.db-shm`. The store is in WAL mode, so the newest commits live in the
+`-wal`; renaming only `grants.db` leaves that beside the fresh empty database
+the next startup creates, which sqlite either replays into it or refuses as
+corrupt. For the same reason, read the moved-aside copy with its own `-wal`
+next to it. `python -c "import sqlite3; ..."` is the tool to reach for -- the
+`sqlite3` CLI is not installed in the container.
 
 See [`running.md`](running.md) for the credential the container needs once it
 is up, and [`remote-access.md`](remote-access.md) for the machine underneath.

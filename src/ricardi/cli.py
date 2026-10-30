@@ -12,7 +12,13 @@ from pathlib import Path
 
 from ricardi import config, policy as policy_mod, readiness
 from ricardi.audit import AuditedPolicy, AuditLog
-from ricardi.grants import GrantError, GrantStore, normalise, seed_from_policy
+from ricardi.grants import (
+    GrantError,
+    GrantStore,
+    normalise,
+    normalise_name,
+    seed_from_policy,
+)
 from ricardi.limits import Limits, RateLimited
 from ricardi.app import Ricardi
 from ricardi.store import SessionIds, ThreadBindings
@@ -52,7 +58,12 @@ async def _serve(args: argparse.Namespace) -> int:
     # serving with no grants would deny everyone and look exactly like a policy
     # bug. A missing file is fine -- open() creates it empty, and every ask is
     # refused until `ricardi grants seed` has run.
-    policy.grants = GrantStore.open(settings.state_dir / "grants.db")
+    # Held in a local as well, because `policy` is rebound twice below: without
+    # it there is nothing left to close the connection through, and WAL dropped
+    # without a checkpoint leaves the next process reading through a stale
+    # grants.db-wal.
+    grants = GrantStore.open(settings.state_dir / "grants.db")
+    policy.grants = grants
     limits = Limits(per_minute=per_minute, per_hour=per_hour)
 
     # Order matters: the rate limiter wraps the rules so it can refuse a turn
@@ -133,6 +144,9 @@ async def _serve(args: argparse.Namespace) -> int:
         pass
     finally:
         await ricardi.close()
+        # Checkpoints the WAL on the way out, so a restart does not read the
+        # store through the last process's grants.db-wal.
+        grants.close()
     return 0
 
 
@@ -188,7 +202,11 @@ def _grants_command(args: argparse.Namespace) -> int:
             store.add(person=args.person, name=args.name, verb=args.verb,
                       by=args.by, granted=granted)
             word = "granted" if granted else "revoked"
-            print(f"{word} {args.verb} on {args.name} for {normalise(args.person)}")
+            # Echoes what was stored, not what was typed: a name that differs
+            # only in case is the same grant, and saying otherwise is how
+            # "I granted it and they are still refused" happens.
+            print(f"{word} {normalise_name(args.verb)} on "
+                  f"{normalise_name(args.name)} for {normalise(args.person)}")
     finally:
         store.close()
     return 0

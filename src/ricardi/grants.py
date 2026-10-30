@@ -67,6 +67,18 @@ def normalise(email: str) -> str:
     return email.strip().lower()
 
 
+def normalise_name(value: str) -> str:
+    """The agent-name and verb key, folded for the same reason emails are.
+
+    Every other name comparison here is case-insensitive -- `app._resolve`
+    matches a typed name against the catalogue with `.lower()`, and
+    `policy._glob` lowers both sides -- so `Ricardi` and `ricardi` must not be
+    two different grants. Without this, `grants add --name Ricardi` prints
+    success, shows up in `grants list`, and still leaves the person refused.
+    """
+    return value.strip().lower()
+
+
 def _grant(row: tuple) -> Grant:
     return Grant(row[0], row[1], row[2], bool(row[3]), row[4], row[5])
 
@@ -113,7 +125,8 @@ class GrantStore:
                 self._conn.execute(
                     "INSERT INTO grant_log (person, name, verb, granted, by, at)"
                     " VALUES (?, ?, ?, ?, ?, ?)",
-                    (normalise(person), name, verb, int(granted), by, at),
+                    (normalise(person), normalise_name(name), normalise_name(verb),
+                     int(granted), by, at),
                 )
         except sqlite3.DatabaseError as exc:
             raise GrantError(f"cannot record the grant: {exc}") from exc
@@ -122,7 +135,7 @@ class GrantStore:
         row = self._query(
             "SELECT granted FROM grant_log WHERE person = ? AND name = ? AND verb = ?"
             " ORDER BY id DESC LIMIT 1",
-            (normalise(person), name, verb),
+            (normalise(person), normalise_name(name), normalise_name(verb)),
         )
         return bool(row and row[0][0])
 
@@ -151,21 +164,20 @@ class GrantStore:
             raise GrantError(f"cannot read the grant store: {exc}") from exc
 
 
-_GLOB_CHARS = frozenset("*?[")
-
-
 def seed_from_policy(store: GrantStore, policy: RulesPolicy, *,
                      names: Sequence[str], by: str) -> int:
     """Grant `ask` to the roster on the names policy.toml already lets them ask.
 
     Once a missing grant means no access, the deploy that lands that would lock
     out everyone currently allowed. This writes down what policy.toml already
-    permits so that deploy is not a flag day. It only ever subtracts: a rule
-    naming no `agents` matches every name, so it seeds each name in `names` (the
-    agent catalogue) one by one. That reproduces today's reach exactly; a
-    wildcard would also cover names added later, which must not be handed to
-    everyone. A glob in `agents` is a pattern rather than a name anyone can be
-    granted, so it is skipped. A rule scoped to `users` seeds only the roster members it names.
+    permits so that deploy is not a flag day. It only ever subtracts: every row
+    is a name from `names` (the agent catalogue), enumerated one by one, so the
+    reach is exactly today's. A rule naming no `agents` matches every name and
+    seeds every name; a rule naming a glob seeds the catalogue names that glob
+    matches, because at decision time that is precisely what it permits. A
+    wildcard row would also cover names added later, which must not be handed
+    to everyone, so no row is ever a pattern. A rule scoped to `users` seeds
+    only the roster members it names.
 
     Idempotent, and a triple with any history is left alone: a second run
     writes nothing, and cannot undo an admin's revoke. Returns rows written.
@@ -176,17 +188,32 @@ def seed_from_policy(store: GrantStore, policy: RulesPolicy, *,
 
     seen = {(g.person, g.name, g.verb) for g in store.history()}
     emails = list(dict.fromkeys(normalise(e) for e in policy.roster.values() if e.strip()))
+    catalogue = [n for n in names if n]
     written = 0
     for rule in policy.rules:
         if rule.effect != "allow" or (rule.actions and "ask" not in rule.actions):
             continue
-        pool = rule.agents or tuple(names)
-        allowed = [n for n in pool if n and not _GLOB_CHARS & set(n)]
+        # A rule carrying any tool-shaped condition cannot match an `ask` at
+        # all: `request.tool` is "" so `_tool_matches` fails on `_any_glob`'s
+        # empty-value guard, `tool_input` is empty so `_paths` returns nothing
+        # and both path conditions fail, and there is no `command` for
+        # `command_matches`. It permits no asking, so there is none to seed --
+        # and seeding it would put rows in `grants list` that are not in force.
+        if rule.tools or rule.path_under or rule.path_matches or rule.command_matches:
+            continue
+        # `agents` is globbed in `Rule.matches`, so a pattern is expanded
+        # against the catalogue rather than dropped. Skipping it would seed
+        # nothing for a rule that today permits every name it matches, which
+        # is the lockout this function exists to prevent.
+        if rule.agents:
+            allowed = [n for n in catalogue if _any_glob(n, rule.agents)]
+        else:
+            allowed = catalogue
         for email in emails:
             if rule.users and not _any_glob(email, rule.users):
                 continue
             for name in allowed:
-                key = (email, name, "ask")
+                key = (email, normalise_name(name), "ask")
                 if key in seen:
                     continue
                 store.add(person=email, name=name, verb="ask", by=by)
