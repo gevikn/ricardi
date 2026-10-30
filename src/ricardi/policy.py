@@ -7,7 +7,9 @@ agreed Claude may do on their box is executable rather than a wiki page.
 
 The interface is deliberately small so a real policy service can replace the
 rules engine without anything above it changing. Everything here fails closed:
-an error, a timeout, a missing attribute and an unmatched request all deny.
+a timeout, a missing attribute and an unmatched request all deny, and a
+grant-store failure makes decide raise, which the enforcement points turn
+into a denial.
 """
 
 from __future__ import annotations

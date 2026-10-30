@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
 
 from ricardi.grants import GrantError, GrantStore
@@ -62,3 +64,13 @@ def test_a_second_connection_can_read_while_another_holds_one(tmp_path):
     a.add(person="a@b.com", name="shared", verb="ask", by="o@b.com")
     b = GrantStore.open(path)
     assert b.holds("a@b.com", "shared", "ask") is True
+
+
+def test_the_log_is_append_only_even_to_direct_sql(tmp_path):
+    s = GrantStore.open(tmp_path / "grants.db")
+    s.add(person="a@b.com", name="shared", verb="ask", by="admin@b.com")
+    with pytest.raises(sqlite3.DatabaseError, match="append-only"):
+        s._conn.execute("UPDATE grant_log SET granted = 0")
+    with pytest.raises(sqlite3.DatabaseError, match="append-only"):
+        s._conn.execute("DELETE FROM grant_log")
+    assert s.holds("a@b.com", "shared", "ask")
