@@ -51,7 +51,11 @@ packages = ["src/ricardi"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+# "." so a test can import a helper from a sibling test module. `python -m
+# pytest` puts the working directory on sys.path for free and bare `pytest`
+# does not, so without this a cross-test import passes locally and fails in
+# CI, which runs `uv run pytest`.
+pythonpath = ["src", "."]
 asyncio_mode = "auto"
 markers = [
     "live: spends real tokens against the Claude Agent SDK; opt in with RICARDI_LIVE=1",
