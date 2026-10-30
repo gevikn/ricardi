@@ -132,13 +132,21 @@ write access.
 
 Who may address which agent is recorded in `state/grants.db`, and from the
 commit that wires it in, Ricardi checks it on every `ask`. A fresh store is
-empty, so the first deploy carrying this needs the seed run once on the box,
-**before the container restarts onto it**:
+empty, so the first deploy carrying this needs the seed run once on the box.
+
+The route that works is the plain one: deploy normally, then seed straight
+away.
 
 ```bash
 cd /opt/ricardi
 docker compose exec ricardi python -m ricardi.cli grants seed --by <your email>
 ```
+
+Between the new container coming up and the seed finishing, every `ask` is
+refused. That is seconds, and it is safe: the store is read on every call with
+no cache, so the first seeded row takes effect immediately and nothing needs a
+restart. It has to be `exec` into the *new* container, because that is the
+first one whose image has the `grants` command at all.
 
 Skip it and nothing fails loudly. Ricardi starts, the health gate passes, and
 every `ask` is refused until the store is seeded. That looks exactly like a
@@ -159,13 +167,16 @@ that is only reliable between processes on the same side of a mount boundary.
 Here both sides are Linux on one filesystem, so the host route would probably
 work; running it in the container removes the question.
 
-One ordering trap. `exec` runs in the container that is up *now*, and an image
-from before the `grants` command existed does not have it. If the commits that
-add the command and the commit that wires the store in reach the box in a
-single deploy, there is no running container to seed from. Deploy the commit
-before the wiring first, seed, then deploy the wiring. The store is read live,
-so if you do get caught out, seeding straight after the new container is up
-also works; the cost is the seconds of refusals in between.
+If you would rather have no refusals at all, there is a two-stage deploy.
+The commits that add the `grants` command and the one that wires the store into
+startup are separate, so deploy the commit that adds the `grants` command
+first, while the running container still serves without checking the store;
+seed with the `exec` above; then deploy the wiring. The catch is that the
+intermediate commit has no `tests` run of its own, and `deploy.yml` refuses
+any SHA without one. Dispatch that first deploy with the `skip_test_gate`
+input, and only for that one; the wiring deploy goes through the gate as
+usual. Whether a few seconds of refusals are worth a bypassed gate is your
+call. The plain route is what this document recommends.
 
 It never touches `.env`, `policy.toml`, `agents.toml` or `state/`. Those are
 untracked, irreplaceable, and the reason the job operates on `/opt/ricardi`
@@ -228,9 +239,26 @@ somewhere else.
 | "Tracked files are modified" | Someone edited the checkout on the box. Resolve it there; the job will not discard it. |
 | Rebuild succeeds, health check fails | Read `docker compose logs ricardi`. A bad `policy.toml` fails at startup and never reaches Slack. |
 | Every `ask` refused, and `policy.toml` looks right | The grant store is empty. `docker compose exec ricardi python -m ricardi.cli grants list` shows nothing; run `grants seed` (see above). |
-| Startup fails naming `grants.db` | The grant store is corrupt. It is deliberately not ignored. Move the file aside and re-seed, or restore it from backup. |
+| Startup fails naming `grants.db` | The grant store is corrupt. It is deliberately not ignored. Recover it by hand; see below. There is no backup to restore from. |
 | Rolled back, and the rollback is also broken | The `:rollback` tag is one deep. `git checkout <older sha> && docker compose up -d --build` on the box. |
 | Runner gone after an OS upgrade | The service unit survives, the runner binary may need `./config.sh remove` and re-registering. |
+
+### A corrupt grant store
+
+Be clear about what the options are, because the obvious one is a trap. There
+is no backup of `state/grants.db`: the restic configuration backs up the
+owner's laptop, not `/opt/ricardi` on the box, and `state/` is the one
+directory the deploy promises never to touch, so nothing else copies it either.
+Do not go looking for a copy that does not exist.
+
+Moving the file aside and re-seeding works mechanically and does damage
+quietly. `grants seed` skips any person, agent and verb that has *any* history,
+and discarding the file discards that history, so the re-seed writes a fresh
+grant for everyone `policy.toml` permits, including anyone an admin had
+revoked. It prints a success count and nothing records that revocations were
+undone. If you must do it, first list who had been revoked from whatever you
+remember or can salvage (`sqlite3 grants.db` may still read parts of a damaged
+file), and run `grants revoke` for each straight after seeding.
 
 See [`running.md`](running.md) for the credential the container needs once it
 is up, and [`remote-access.md`](remote-access.md) for the machine underneath.

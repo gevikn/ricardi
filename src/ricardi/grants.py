@@ -51,6 +51,12 @@ CREATE TABLE IF NOT EXISTS grant_log (
   at      TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS grant_lookup ON grant_log (person, name, verb, id);
+-- Append-only is a stated constraint, so the database enforces it rather than
+-- relying on there being no method that would break it.
+CREATE TRIGGER IF NOT EXISTS grant_log_no_update BEFORE UPDATE ON grant_log
+BEGIN SELECT RAISE(ABORT, 'grant_log is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS grant_log_no_delete BEFORE DELETE ON grant_log
+BEGIN SELECT RAISE(ABORT, 'grant_log is append-only'); END;
 """
 
 _COLUMNS = "person, name, verb, granted, by, at"
@@ -85,6 +91,11 @@ class GrantStore:
             # WAL lets the CLI write beside the live container's reader. A file
             # that is not a database fails here, on the first real read.
             conn.execute("PRAGMA journal_mode=WAL")
+            # Short on purpose. decide() reads on the event loop, so a read
+            # stuck behind a seeding writer stalls every conversation for as
+            # long as it waits; sqlite's 5s default is far too long. Failing
+            # fast refuses that one turn, which beats freezing all of them.
+            conn.execute("PRAGMA busy_timeout=250")
             conn.executescript(_SCHEMA)
         except (sqlite3.DatabaseError, OSError) as exc:
             if conn is not None:

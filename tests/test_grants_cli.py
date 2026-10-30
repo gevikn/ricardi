@@ -109,3 +109,12 @@ def test_a_launch_with_flags_and_no_subcommand_still_parses(monkeypatch):
     assert main(["--backend", "fake", "--transport", "local", "--env", "nope"]) == 0
     assert seen["args"].command is None
     assert seen["args"].backend == "fake"
+
+
+def test_state_dir_works_before_the_action_too(tmp_path, capsys):
+    # The SUPPRESS parent-parser arrangement exists only for this form.
+    s = _store(tmp_path)
+    s.add(person="a@b.com", name="shared", verb="ask", by="admin@b.com")
+    s.close()
+    assert main(["grants", "--state-dir", str(tmp_path), "list"]) == 0
+    assert "a@b.com" in capsys.readouterr().out
