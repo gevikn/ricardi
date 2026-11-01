@@ -41,10 +41,19 @@ READING_TOOLS = frozenset({"Read", "Grep", "Glob", "NotebookRead"})
 # only `Write` and `Edit`: `READING_TOOLS` already holds `NotebookRead`, so
 # leaving its counterpart out would be an oversight, not a decision, and
 # including it can only refuse more. A builder's call, recorded as one.
+# A short list of writers, where READING_TOOLS is an allowlist that treats an
+# unknown tool as writing. Deliberate, for three reasons. A tool outside this
+# set is not waved through: it matches no allow rule that names `tools`, so it
+# is already denied by default, for readers and writers alike. A reader holds
+# the shell anyway, so the access spec has already accepted a larger indirect
+# write hole than an unlisted tool could open. And a fail-closed list here
+# would refuse harmless tools that merely are not readers, and make `read`
+# unusable. The backstop is pinned by a test, so a tools-less allow rule shows.
 # Enforced by tool name, never by reading a command: the shell is not in this
 # set, so a reader can still cause a write through it. That is documented in
 # docs/access-simulation.md rather than engineered around here.
 WRITING_TOOLS = frozenset({"Write", "Edit", "NotebookEdit"})
+_WRITING_LOWER = frozenset(t.lower() for t in WRITING_TOOLS)
 
 # Tool inputs name their path under different keys depending on the tool.
 _PATH_KEYS = ("file_path", "path", "notebook_path")
@@ -268,7 +277,9 @@ def _tier_refusal(request: Request) -> Decision | None:
     """
     if request.action != "tool" or request.tier != "read":
         return None
-    if request.tool not in WRITING_TOOLS:
+    # Case-insensitive, like `_glob`: the rules match tool names that way, and a
+    # check that disagrees with them is how `GIT PUSH` once evaded a deny.
+    if request.tool.lower() not in _WRITING_LOWER:
         return None
     return Decision(
         allow=False,

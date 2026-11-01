@@ -153,17 +153,56 @@ async def test_a_storeless_policy_still_refuses_a_caller_supplied_read(written_t
     assert d.allow is False and d.rule == "tier"
 
 
-async def test_an_unrecognised_tier_is_not_treated_as_read_or_write(written_toml):
-    # Not a refusal's business: only the exact string "read" is constrained,
-    # and nothing here can allow. The rules decide, as for an empty tier.
-    policy = load(written_toml('[[rule]]\neffect="deny"\n'))
-    assert (await policy.decide(_tool("Write", "admin"))).allow is False
+async def test_an_unrecognised_tier_is_left_to_the_rules_not_treated_as_read(written_toml):
+    # The rules allow Write, so only the tier could refuse it. "admin" is not
+    # "read"; it must not be constrained by a refusal that is read's alone.
+    policy = load(written_toml(ALLOW_ALL))
+    assert _tier_refusal(_tool("Write", "admin")) is None
+    assert (await policy.decide(_tool("Write", "admin"))).allow is True
 
 
-async def test_the_tier_refusal_is_not_an_allow_for_a_denied_tool(written_toml):
-    # A writer is not waved through: the rules still decide.
-    policy = load(written_toml('[[rule]]\neffect="deny"\ntools=["Write"]\n'))
+async def test_a_writer_is_not_refused_where_the_rules_allow(written_toml):
+    # Same allowing policy as the reader's refusal: the one difference is the tier.
+    policy = load(written_toml(ALLOW_ALL))
+    assert (await policy.decide(_tool("Write", "read"))).allow is False
+    assert (await policy.decide(_tool("Write", "write"))).allow is True
+
+
+async def test_a_denying_rule_still_beats_a_writer(written_toml):
+    policy = load(written_toml("""
+[[rule]]
+effect = "allow"
+[[rule]]
+effect = "deny"
+tools = ["Write"]
+"""))
     assert (await policy.decide(_tool("Write", "write"))).allow is False
+
+
+async def test_an_unlisted_writing_tool_is_refused_by_default_for_both_tiers(written_toml):
+    # The backstop WRITING_TOOLS rests on: a tool outside the set matches no
+    # allow rule naming `tools`, so the default deny refuses it with no rule
+    # named. A tools-less allow rule added later would make this fail.
+    policy = load(written_toml("""
+[[rule]]
+effect = "allow"
+actions = ["ask"]
+[[rule]]
+effect = "allow"
+actions = ["tool"]
+tools = ["Read", "Write", "Edit", "Bash"]
+"""))
+    for tool in ("MultiEdit", "Patch", "TodoWrite"):
+        for tier in ("read", "write"):
+            d = await policy.decide(_tool(tool, tier))
+            assert d.allow is False and d.rule == "", (tool, tier, d)
+
+
+async def test_the_tier_check_is_case_insensitive_like_the_rules(written_toml):
+    policy = load(written_toml(ALLOW_ALL))
+    for tool in ("write", "EDIT", "notebookedit"):
+        d = await policy.decide(_tool(tool, "read"))
+        assert d.allow is False and d.rule == "tier", tool
 
 
 def test_the_writing_tools_are_the_three_named():
@@ -175,4 +214,4 @@ def test_the_tier_refusal_cannot_allow_anything():
     assert "allow=True" not in inspect.getsource(_tier_refusal)
     assert _tier_refusal(_tool("Write", "write")) is None
     assert _tier_refusal(_tool("Read", "read")) is None
-    assert _tier_refusal(Request(action="ask", principal=KNOWN, tier="read")) is None
+    assert _tier_refusal(Request(action="ask", principal=KNOWN, tier="read", tool="Write")) is None
