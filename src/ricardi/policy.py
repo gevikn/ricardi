@@ -321,6 +321,7 @@ class RulesPolicy:
         rules: list[Rule] | tuple[Rule, ...] = (),
         roster: dict[str, str] | None = None,
         grants: GrantStore | None = None,
+        owners: dict[str, tuple[str, ...]] | None = None,
     ):
         self.rules = tuple(rules)
         # None means no grant check at all, which is how every deployment that
@@ -329,6 +330,17 @@ class RulesPolicy:
         # Slack user id -> email. The roster is the whole identity story: no
         # directory lookups, so no extra Slack scopes and nothing to cache.
         self.roster = dict(roster or {})
+        # Agent name -> owner emails, both already normalised by `load`. Read
+        # from policy.toml only: nothing a running process does adds to it, so
+        # ownership can never be bootstrapped from the database.
+        self.owners = {n: tuple(e) for n, e in (owners or {}).items()}
+
+    def owns(self, email: str, agent: str) -> bool:
+        """Whether this person is a named owner of this agent name. Decides nothing."""
+        from ricardi.grants import normalise, normalise_name
+
+        who = normalise(email)
+        return bool(who) and who in self.owners.get(normalise_name(agent), ())
 
     def principal(self, slack_user_id: str) -> Principal:
         email = self.roster.get(slack_user_id, "")
@@ -449,6 +461,10 @@ class ClosedPolicy:
     def __init__(self, why: str):
         self.why = why
         self.roster: dict[str, str] = {}
+        self.owners: dict[str, tuple[str, ...]] = {}
+
+    def owns(self, email: str, agent: str) -> bool:
+        return False
 
     def principal(self, slack_user_id: str) -> Principal:
         return Principal(id=slack_user_id)
@@ -491,6 +507,22 @@ def load(path: str | os.PathLike[str]) -> RulesPolicy:
             raise PolicyError(f"{p}: {slack} is listed twice.")
         roster[slack] = email
 
+    # Imported here, not at module scope: grants takes `_any_glob` from this
+    # module through its own function-local import, so a top-level import
+    # here would close the cycle. Normalisation stays single-sourced in grants
+    # so a name written here is keyed exactly as the grant rows are.
+    from ricardi.grants import normalise, normalise_name
+
+    owners: dict[str, tuple[str, ...]] = {}
+    for entry in raw.get("owner") or []:
+        agent = normalise_name(str(entry.get("agent", "")))
+        email = normalise(str(entry.get("email", "")))
+        if not agent or not email:
+            raise PolicyError(f"{p}: every [[owner]] needs both agent and email.")
+        if email in owners.get(agent, ()):
+            raise PolicyError(f"{p}: {email} is listed twice as an owner of {agent}.")
+        owners[agent] = (*owners.get(agent, ()), email)
+
     rules: list[Rule] = []
     for entry in raw.get("rule") or []:
         effect = str(entry.get("effect", "")).strip().lower()
@@ -520,7 +552,7 @@ def load(path: str | os.PathLike[str]) -> RulesPolicy:
 
     if not rules:
         raise PolicyError(f"{p} has no rules, so nothing would be allowed.")
-    return RulesPolicy(rules=rules, roster=roster)
+    return RulesPolicy(rules=rules, roster=roster, owners=owners)
 
 
 def _tuple(value: Any) -> tuple[str, ...]:

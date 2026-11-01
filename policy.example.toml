@@ -50,6 +50,15 @@ email = "you@example.com"
 slack = "U11111111111"
 email = "them@example.com"
 
+# ------------------------------------------------------------------ owners
+# Who may hand out access to an agent name. The admin writes this, here, in a
+# file the bot mounts read-only: the database never bootstraps itself, and there
+# is no self-service path to becoming an owner. Changing an owner is a reviewed
+# diff to this file and nothing else. An owner is bound to one name, not to all.
+[[owner]]
+agent = "shared"
+email = "you@example.com"
+
 # ------------------------------------------------------------- who may ask
 [[rule]]
 name     = "the local stub, for trying it out before Slack exists"
