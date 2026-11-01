@@ -144,6 +144,36 @@ async def test_an_unparseable_grant_explains_the_shape(world):
     assert store.history() == ()
 
 
+def test_the_router_still_parses_a_grant():
+    from ricardi import router
+
+    c = router.parse("grant <@U2> read on n1")
+    assert (c.kind, c.user, c.tier, c.agent) == ("grant", "U2", "read", "n1")
+
+
+@pytest.mark.parametrize("text", [
+    "grant-bot: hi", "revoke-bot: hi", "tell grant-bot hi",
+])
+def test_an_agent_named_after_the_verb_is_still_addressable(text):
+    from ricardi import router
+
+    c = router.parse(text)
+    assert c.kind == "tell" and c.agent in {"grant-bot", "revoke-bot"}
+
+
+@pytest.mark.parametrize("text", ["grant-bot hello", "revoke-bot hello"])
+def test_a_verb_with_a_hyphen_is_not_a_command(text):
+    from ricardi import router
+
+    assert router.parse(text).kind == "say"
+
+
+def test_flags_survive_a_malformed_grant():
+    from ricardi import router
+
+    assert router.parse("-ro grant bob").flags == ("ro",)
+
+
 async def test_an_unparseable_revoke_explains_the_shape(world):
     app, store, transport, *_ = world
     await app.handle(inbound("revoke bob", user="U1"))

@@ -323,8 +323,9 @@ yet have the scope to invite people itself, so a grant that seems to do nothing
 usually means the person was never added. **Someone who is in the channel
 without a grant has presence and nothing more.**
 
-Every grant and revoke, allowed or refused, is a line in the audit log, and a
-refused one writes nothing. Rows are never edited or deleted: a revoke is a
+Every grant and revoke that reaches a decision is a line in the audit log,
+allowed or refused, and a refused one writes nothing. A message that does not
+parse is answered with the shape and is not audited. Rows are never edited or deleted: a revoke is a
 newer row that supersedes the grant, and `ricardi grants list` shows what is in
 force. An owner whose email is missing from the roster cannot act as one; Ricardi
 logs a warning naming them at startup rather than refusing to start.

@@ -35,7 +35,7 @@ _GRANT = re.compile(
     rf"^grant\s+{_USER}\s+(?P<tier>\S+)\s+on\s+{_NAME}\s*$", re.IGNORECASE
 )
 _REVOKE = re.compile(rf"^revoke\s+{_USER}\s+on\s+{_NAME}\s*$", re.IGNORECASE)
-_CONFER_WORD = re.compile(r"^(?P<verb>grant|revoke)\b", re.IGNORECASE)
+_CONFER_WORD = re.compile(r"^(?P<verb>grant|revoke)(?=\s|$)", re.IGNORECASE)
 
 GRANT_SHAPE = "`grant @person <read|write> on <agent>`"
 REVOKE_SHAPE = "`revoke @person on <agent>`"
@@ -117,7 +117,7 @@ def parse(message: str) -> Command:
         verb = m.group("verb").lower()
         parsed = (_GRANT if verb == "grant" else _REVOKE).match(text)
         if not parsed:
-            return Command(kind=f"bad_{verb}", raw=raw)
+            return Command(kind=f"bad_{verb}", flags=found, raw=raw)
         return Command(
             kind=verb,
             agent=parsed.group("name"),
@@ -157,7 +157,7 @@ HELP = (
     "- `tell <agent> <message>` - send that agent a message\n"
     "- `<agent>: <message>` - the same thing, shorter\n"
     "- `who` - which agent this thread is talking to\n"
-    f"- {GRANT_SHAPE} / {REVOKE_SHAPE} - owners only: give or take back a tier\n"
+    f"- {GRANT_SHAPE} / {REVOKE_SHAPE} - owners, and people they have let grant: give or take back a tier\n"
     "Once a thread is talking to an agent, just reply in the thread and I pass "
     "it along.\n\n"
     "Flags go first, and only ever take something away:\n"

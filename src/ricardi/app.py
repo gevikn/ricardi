@@ -206,7 +206,7 @@ class Ricardi:
                     person=person, name=name, verb=tier, by=by, granted=False
                 )
         except GrantError as exc:
-            log.error("%s by %s failed: %s", action, by, exc)
+            log.exception("%s by %s failed", action, by)
             await self._say(
                 inbound,
                 f"I couldn't record that {action}, so nothing should be assumed "
