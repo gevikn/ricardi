@@ -175,7 +175,16 @@ class Ricardi:
                 inbound, f"I couldn't record that {action}: no grant store is open."
             )
             return
-        name = await self._resolve(command.agent)
+        try:
+            name = await self._resolve(command.agent)
+        except BackendError:
+            # Allowed, but there is nothing by that name to record against:
+            # say so, so the channel does not read this as done.
+            await self._say(
+                inbound,
+                f"Nothing was recorded: I have no agent called *{command.agent}*.",
+            )
+            return
         try:
             if action == "grant":
                 self.grants.add(

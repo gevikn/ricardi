@@ -194,8 +194,10 @@ async def test_a_name_nobody_runs_is_reported_and_writes_nothing(world):
     app, store, transport, *_ = world
     app.policy._inner.owners["ghost"] = ("owner@example.com",)
     await app.handle(inbound("grant <@U2> read on ghost", user="U1"))
-    assert store.tier("bob@example.com", "ghost") == ""
-    assert "ghost" in said(transport)
+    assert store.history() == ()
+    reply = said(transport).lower()
+    assert "ghost" in reply and "no agent" in reply and "nothing was recorded" in reply
+    assert "now holds" not in reply and "no longer" not in reply
 
 
 async def test_no_store_means_no_grant_is_claimed(tmp_path):

@@ -91,8 +91,13 @@ async def test_a_target_who_is_not_on_the_roster_is_refused(policy):
     assert d.allow is False and d.rule == "target not on the roster"
 
 
-async def test_the_target_check_comes_before_the_authority_check(policy):
-    d = await policy.decide(grant_request(by=KNOWN_A, target="stranger@example.com", confers="read"))
+async def test_authority_is_checked_before_the_target_so_the_roster_does_not_leak(policy):
+    on = await policy.decide(grant_request(by=KNOWN_A, target="bob@example.com", confers="read"))
+    off = await policy.decide(grant_request(by=KNOWN_A, target="stranger@example.com", confers="read"))
+    assert on.rule == off.rule == "not a grantor"
+    assert on.reason == off.reason
+    # A real grantor still hears the specific problem.
+    d = await policy.decide(grant_request(by=OWNER, target="stranger@example.com", confers="read"))
     assert d.rule == "target not on the roster"
 
 
@@ -210,7 +215,7 @@ async def test_reset_and_scope_need_a_grantor_even_when_a_rule_allows_them(tmp_p
     for verb in ("reset", "scope"):
         for target in ("", "bob@example.com", "stranger@example.com"):
             d = await p.decide(Request(action=verb, principal=KNOWN_A, agent="n1", target=target))
-            expected = "target not on the roster" if target == "stranger@example.com" else "not a grantor"
+            expected = "not a grantor"  # authority first: no roster leak
             assert d.allow is False and d.rule == expected, (verb, target)
         # A grantor with no (or a rostered) target passes the check.
         assert (await p.decide(Request(action=verb, principal=OWNER, agent="n1"))).allow is True

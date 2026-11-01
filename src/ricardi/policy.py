@@ -353,19 +353,6 @@ def _conferral_refusal(policy: RulesPolicy, request: Request) -> Decision | None
     def refuse(rule: str, reason: str) -> Decision:
         return Decision(allow=False, reason=reason, rule=rule)
 
-    # The roster is the only list of people; a conferral on anyone off it would
-    # be a row no decision could ever use. Normalised on both sides.
-    # Required for grant and revoke; reset and scope may not name a person, so
-    # their target is checked only when one is supplied.
-    needs_person = request.action in ("grant", "revoke") or bool(target)
-    if needs_person and (
-        not target or target not in {normalise(e) for e in policy.roster.values()}
-    ):
-        return refuse(
-            "target not on the roster",
-            "That person isn't on the roster, so they can't be given access.",
-        )
-
     owner = policy.owns(who, name)
     delegate = (
         not owner
@@ -377,6 +364,21 @@ def _conferral_refusal(policy: RulesPolicy, request: Request) -> Decision | None
             "not a grantor",
             f"Only an owner of {request.agent or 'this name'}, or someone it has "
             "delegated granting to, can do that.",
+        )
+
+    # After authority, not before: a refusal that depends on whether the target
+    # is rostered would tell anyone at all which Slack ids are on the roster.
+    # The roster is the only list of people; a conferral on anyone off it would
+    # be a row no decision could ever use. Normalised on both sides.
+    # Required for grant and revoke; reset and scope may not name a person, so
+    # their target is checked only when one is supplied.
+    needs_person = request.action in ("grant", "revoke") or bool(target)
+    if needs_person and (
+        not target or target not in {normalise(e) for e in policy.roster.values()}
+    ):
+        return refuse(
+            "target not on the roster",
+            "That person isn't on the roster, so they can't be given access.",
         )
 
     if request.action == "grant":
