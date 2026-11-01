@@ -353,11 +353,16 @@ class RulesPolicy:
         # arrives is discarded and replaced by what the store says now. Read per
         # decision (no cache), and a failing store raises: folded into "" it
         # would audit a broken store as nobody holding anything. Fills a field;
-        # there is no `allow=True` here to reach.
-        tier = ""
-        if self.grants is not None and request.principal.known:
-            tier = self.grants.tier(request.principal.email, request.agent)
-        request = replace(request, tier=tier)
+        # there is no `allow=True` here to reach. A policy with no store is left
+        # alone: it is the mode every deployment that has not opted in still runs,
+        # and it must decide exactly as before.
+        if self.grants is not None:
+            tier = (
+                self.grants.tier(request.principal.email, request.agent)
+                if request.principal.known
+                else ""
+            )
+            request = replace(request, tier=tier)
 
         # Before the rules, and only ever to refuse. Putting it first is what
         # makes the invariant structural: this branch has no `allow=True` to

@@ -128,12 +128,14 @@ async def test_decide_discards_a_supplied_tier_when_the_store_says_none(tmp_path
     assert seen[0].tier == ""
 
 
-async def test_decide_discards_a_supplied_tier_with_no_store():
+async def test_a_policy_with_no_store_leaves_a_supplied_tier_intact():
+    # The storeless mode is how every deployment that has not opted in still
+    # decides; it must not mutate the request. Pins the boundary.
     seen = []
     policy = RulesPolicy(rules=[ALLOW_ASK], roster=ROSTER)
     policy.rules = (Recorder(seen),) + policy.rules
-    await policy.decide(_ask(policy, tier="write"))
-    assert seen[0].tier == ""
+    await policy.decide(_ask(policy, tier="read"))
+    assert seen[0].tier == "read"
 
 
 async def test_decide_discards_a_supplied_tier_for_an_unknown_principal(tmp_path):
