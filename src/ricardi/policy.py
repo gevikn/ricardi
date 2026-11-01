@@ -42,6 +42,31 @@ _PATH_KEYS = ("file_path", "path", "notebook_path")
 _SUMMARY_KEYS = ("command", "file_path", "path", "pattern", "url")
 
 
+# A person's tier on a name, ascending. Absence is the floor (rank 0). `exec`
+# is a name's scope, not a person tier.
+TIERS: tuple[str, ...] = ("read", "write")
+
+# Verbs that change who may do what, as opposed to doing it. Not designed yet,
+# so nothing allows them and the default denies.
+PLANE2_VERBS = frozenset({"grant", "revoke", "reset", "scope"})
+
+
+def tier_rank(tier: str) -> int:
+    """1 for read, 2 for write, 0 for absence or anything unrecognised."""
+    return TIERS.index(tier) + 1 if tier in TIERS else 0
+
+
+def at_most(tier: str, ceiling: str) -> bool:
+    """Is `tier` no higher than `ceiling`? Absence is a tier; a non-tier is not.
+
+    An unrecognised value on either side is False, not rank 0: "admin" must not
+    pass a ceiling check just because it ranks as the floor.
+    """
+    if any(t and t not in TIERS for t in (tier, ceiling)):
+        return False
+    return tier_rank(tier) <= tier_rank(ceiling)
+
+
 @dataclass(frozen=True)
 class Principal:
     """Who is asking. `known` is false for anyone not on the roster."""
@@ -82,6 +107,16 @@ class Request:
     # unconstrained by this check, which only happens when no agent is behind
     # the request -- `config.load` gives every agent at least one root.
     agent_roots: tuple[str, ...] = ()
+    # The asker's tier on this name: "", "read" or "write". Filled in by
+    # `decide` from the grant store and NEVER by a caller -- a caller-supplied
+    # tier would be a way to widen oneself, so whatever arrives here from
+    # outside is overwritten.
+    tier: str = ""
+    # Whom a plane-2 verb (grant, revoke, reset, scope) is aimed at: an email.
+    target: str = ""
+    # What a "grant" would give the target: a tier from `TIERS`. Rules match it
+    # exactly, never by glob.
+    confers: str = ""
 
 
 @dataclass(frozen=True)
@@ -160,6 +195,11 @@ class Rule:
     path_matches: tuple[str, ...] = ()
     command_matches: tuple[str, ...] = ()
     obligations: tuple[str, ...] = ()
+    tiers: tuple[str, ...] = ()
+    targets: tuple[str, ...] = ()
+    # Exact, like `channels`: a glob on a conferral is how `rea*` silently
+    # covers a tier nobody meant.
+    confers: tuple[str, ...] = ()
 
     def matches(self, request: Request) -> bool:
         """Every dimension the rule names must match; unnamed ones match all."""
@@ -172,6 +212,12 @@ class Rule:
         if self.agents and not _any_glob(request.agent, self.agents):
             return False
         if self.tools and not _tool_matches(request.tool, self.tools):
+            return False
+        if self.tiers and not _any_glob(request.tier, self.tiers):
+            return False
+        if self.targets and not _any_glob(request.target, self.targets):
+            return False
+        if self.confers and request.confers not in self.confers:
             return False
 
         if self.path_under:
@@ -466,6 +512,9 @@ def load(path: str | os.PathLike[str]) -> RulesPolicy:
                 path_matches=_tuple(entry.get("path_matches")),
                 command_matches=_tuple(entry.get("command_matches")),
                 obligations=_tuple(entry.get("obligations")),
+                tiers=_tuple(entry.get("tiers")),
+                targets=_tuple(entry.get("targets")),
+                confers=_tuple(entry.get("confers")),
             )
         )
 
