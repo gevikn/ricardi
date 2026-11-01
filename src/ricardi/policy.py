@@ -17,7 +17,7 @@ from __future__ import annotations
 import fnmatch
 import os
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -347,6 +347,18 @@ class RulesPolicy:
         return Principal(id=slack_user_id, email=email, known=bool(email))
 
     async def decide(self, request: Request) -> Decision:
+        # Before everything, so every branch and every rule sees it. Overwritten,
+        # never filled-if-empty: a tier a caller brings with it is a way to
+        # claim write from application code and skip the model, so whatever
+        # arrives is discarded and replaced by what the store says now. Read per
+        # decision (no cache), and a failing store raises: folded into "" it
+        # would audit a broken store as nobody holding anything. Fills a field;
+        # there is no `allow=True` here to reach.
+        tier = ""
+        if self.grants is not None and request.principal.known:
+            tier = self.grants.tier(request.principal.email, request.agent)
+        request = replace(request, tier=tier)
+
         # Before the rules, and only ever to refuse. Putting it first is what
         # makes the invariant structural: this branch has no `allow=True` to
         # reach, so no flag can widen what the rules would have decided, and

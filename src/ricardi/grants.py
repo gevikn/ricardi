@@ -165,6 +165,20 @@ class GrantStore:
         )
         return bool(row and row[0][0])
 
+    def tier(self, person: str, name: str) -> str:
+        """The highest tier this person currently holds on this name, or "".
+
+        Reports, never judges. Built on `holds`, so "in force" is decided in one
+        place: the latest row per triple wins, and a superseded write leaves the
+        read row beneath it standing. Reads the log on every call; no cache.
+        """
+        from ricardi.policy import TIERS
+
+        for verb in reversed(TIERS):
+            if self.holds(person, name, verb):
+                return verb
+        return ""
+
     def current(self) -> tuple[Grant, ...]:
         """Grants in force: the latest row per triple, if that row is a grant."""
         rows = self._query(
