@@ -36,6 +36,16 @@ SHELL_ALIAS = "shell"
 # preventing; a read tool briefly refused is an annoyance.
 READING_TOOLS = frozenset({"Read", "Grep", "Glob", "NotebookRead"})
 
+# Tools that change files directly. What a `read` tier may not call. Only ever
+# a subtraction. `NotebookEdit` is here although the access spec's table names
+# only `Write` and `Edit`: `READING_TOOLS` already holds `NotebookRead`, so
+# leaving its counterpart out would be an oversight, not a decision, and
+# including it can only refuse more. A builder's call, recorded as one.
+# Enforced by tool name, never by reading a command: the shell is not in this
+# set, so a reader can still cause a write through it. That is documented in
+# docs/access-simulation.md rather than engineered around here.
+WRITING_TOOLS = frozenset({"Write", "Edit", "NotebookEdit"})
+
 # Tool inputs name their path under different keys depending on the tool.
 _PATH_KEYS = ("file_path", "path", "notebook_path")
 # Keys worth quoting back to the channel when announcing what is about to run.
@@ -247,6 +257,30 @@ class Rule:
         return True
 
 
+def _tier_refusal(request: Request) -> Decision | None:
+    """Apply the asker's tier. Returns a refusal, or None to carry on.
+
+    Never returns an allow, for the same reason as `_flag_refusal`: having no
+    allowing branch at all is the contract, not an oversight. Holding `write` adds
+    nothing here; it merely stops this refusing and leaves the rules to decide.
+    An empty tier is "unconstrained by tier", not "none" -- enforcing none waits
+    for the build step where someone with presence and no tier exists.
+    """
+    if request.action != "tool" or request.tier != "read":
+        return None
+    if request.tool not in WRITING_TOOLS:
+        return None
+    return Decision(
+        allow=False,
+        reason=(
+            f"You hold read on {request.agent or 'this name'}, which does not "
+            f"include {request.tool}. Refused: "
+            f"{summarise(request.tool, request.tool_input)}. Ask an owner for write."
+        ),
+        rule="tier",
+    )
+
+
 def _flag_refusal(request: Request) -> Decision | None:
     """Apply the asker's flags. Returns a refusal, or None to carry on.
 
@@ -369,6 +403,11 @@ class RulesPolicy:
         # reach, so no flag can widen what the rules would have decided, and
         # no rule that forgot something can be used to get around a flag.
         refused = _flag_refusal(request)
+        if refused is not None:
+            return refused
+
+        # Beside the flags, for the same reason: refuse-only, before the rules.
+        refused = _tier_refusal(request)
         if refused is not None:
             return refused
 

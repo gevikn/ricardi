@@ -99,3 +99,80 @@ def test_a_rule_naming_targets_does_not_match_a_different_target():
     rule = Rule(effect="allow", targets=("*@example.com",))
     assert not rule.matches(Request(action="grant", target="bob@other.org", principal=KNOWN))
     assert not rule.matches(Request(action="grant", target="", principal=KNOWN))
+
+
+# --- the read tier ----------------------------------------------------------
+
+import inspect
+
+from ricardi.policy import WRITING_TOOLS, _tier_refusal
+
+ALLOW_ALL = '[[rule]]\neffect="allow"\n'
+
+
+def _tool(tool: str, tier: str, **kw) -> Request:
+    return Request(action="tool", principal=KNOWN, agent="n1", tier=tier, tool=tool,
+                   tool_input=kw.get("tool_input", {"file_path": "/workspace/n1/a.py"}))
+
+
+async def test_a_reader_may_not_edit_or_write(written_toml):
+    policy = load(written_toml(ALLOW_ALL))
+    for tool in ("Write", "Edit", "NotebookEdit"):
+        d = await policy.decide(_tool(tool, "read"))
+        assert d.allow is False
+        assert "read" in d.reason
+        assert d.rule == "tier"
+
+
+async def test_a_reader_still_gets_the_reading_tools_and_the_shell(written_toml):
+    policy = load(written_toml(ALLOW_ALL))
+    for tool in ("Read", "Grep", "Glob", "Bash"):
+        assert (await policy.decide(_tool(tool, "read"))).allow is True
+
+
+async def test_a_writer_may_write(written_toml):
+    policy = load(written_toml(ALLOW_ALL))
+    assert (await policy.decide(_tool("Write", "write"))).allow is True
+
+
+async def test_no_tier_row_leaves_the_rules_to_decide(written_toml):
+    # Backward compatibility, and deliberate: absence of a tier row means
+    # "unconstrained by tier", not "none". Enforcing none belongs with the
+    # channel-to-name binding, where an invitee without a tier exists.
+    policy = load(written_toml(ALLOW_ALL))
+    assert (await policy.decide(_tool("Write", ""))).allow is True
+
+
+async def test_a_storeless_policy_still_refuses_a_caller_supplied_read(written_toml):
+    # `grants=None` leaves a caller's tier alone on purpose (it is the mode a
+    # deployment that has not opted in runs, and the mode these tests use). The
+    # refusal must fire there too, so "only ever subtracts" holds in both modes.
+    policy = load(written_toml(ALLOW_ALL))
+    assert policy.grants is None
+    d = await policy.decide(_tool("Write", "read"))
+    assert d.allow is False and d.rule == "tier"
+
+
+async def test_an_unrecognised_tier_is_not_treated_as_read_or_write(written_toml):
+    # Not a refusal's business: only the exact string "read" is constrained,
+    # and nothing here can allow. The rules decide, as for an empty tier.
+    policy = load(written_toml('[[rule]]\neffect="deny"\n'))
+    assert (await policy.decide(_tool("Write", "admin"))).allow is False
+
+
+async def test_the_tier_refusal_is_not_an_allow_for_a_denied_tool(written_toml):
+    # A writer is not waved through: the rules still decide.
+    policy = load(written_toml('[[rule]]\neffect="deny"\ntools=["Write"]\n'))
+    assert (await policy.decide(_tool("Write", "write"))).allow is False
+
+
+def test_the_writing_tools_are_the_three_named():
+    assert WRITING_TOOLS == frozenset({"Write", "Edit", "NotebookEdit"})
+
+
+def test_the_tier_refusal_cannot_allow_anything():
+    # Structural, like _flag_refusal: there is no allow=True to reach.
+    assert "allow=True" not in inspect.getsource(_tier_refusal)
+    assert _tier_refusal(_tool("Write", "write")) is None
+    assert _tier_refusal(_tool("Read", "read")) is None
+    assert _tier_refusal(Request(action="ask", principal=KNOWN, tier="read")) is None

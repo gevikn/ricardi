@@ -214,6 +214,21 @@ than by accident:
   read-only mount**, with its own session. That costs the shared transcript,
   which is the product. The trade is real and unavoidable.
 
+### What the `read` tier enforces, as built
+
+The `read` tier is enforced **by tool name**: a person holding `read` on a name
+is refused `Write`, `Edit` and `NotebookEdit` (`policy.WRITING_TOOLS`), with the
+audit line naming the rule `tier`. It is refuse-only; it never allows anything.
+
+It is **not airtight, and is not meant to be.** The read tier is given the
+shell, so a reader cannot write directly but can cause a write indirectly,
+through any command the rules let them run (H4 and H5 above). No attempt is made
+to detect writes inside a command string: a command allowlist bounds the string,
+never the behaviour. This is the courtesy answer above, taken on purpose.
+
+Where the boundary must hold against someone adversarial, the alternative is a
+separate name over a read-only mount (L1), with its own session.
+
 ## Can this be dialled to paranoid?
 
 The default is a courtesy boundary. An operator who needs a higher bar should be
