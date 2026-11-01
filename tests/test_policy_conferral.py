@@ -121,7 +121,8 @@ async def test_a_delegate_with_no_tier_cannot_confer_anything(tmp_path):
     p = _policy(tmp_path)
     p.grants.add(person="delegate@example.com", name="n1", verb="read", by="t", granted=False)
     d = await p.decide(grant_request(by=DELEGATE_READ, target="bob@example.com", confers="read"))
-    assert d.allow is False and d.rule == "above the grantor"
+    assert d.allow is False and d.rule == "no tier of your own"
+    assert d.rule != "above the grantor"
 
 
 async def test_revoke_is_not_bounded_by_the_grantors_tier(policy):
@@ -156,11 +157,65 @@ async def test_an_unknown_principal_is_refused_as_such(policy):
     assert d.allow is False and d.rule == "no roster entry"
 
 
-async def test_the_check_has_no_allow_of_its_own():
+async def test_the_check_has_no_allow_of_its_own(tmp_path):
     from ricardi.policy import _conferral_refusal
 
-    p = RulesPolicy(rules=[], roster=ROSTER, owners={"n1": ("owner@example.com",)})
-    assert _conferral_refusal(p, grant_request(by=OWNER, target="bob@example.com", confers="read")) is None
+    p = _policy(tmp_path)
+    cases = [
+        grant_request(by=by, target=target, confers=confers, agent=agent)
+        for by in (OWNER, DELEGATE_READ, KNOWN_A)
+        for target in ("bob@example.com", "stranger@example.com", "")
+        for confers in ("read", "write", "admin", "")
+        for agent in ("n1", "n2")
+    ] + [
+        revoke_request(by=by, target=target, agent=agent)
+        for by in (OWNER, DELEGATE_READ, KNOWN_A)
+        for target in ("bob@example.com", "stranger@example.com", "")
+        for agent in ("n1", "n2")
+    ] + [
+        Request(action=a, principal=by, agent=agent, target=target)
+        for a in ("reset", "scope")
+        for by in (OWNER, DELEGATE_READ, KNOWN_A)
+        for target in ("bob@example.com", "stranger@example.com", "")
+        for agent in ("n1", "n2")
+    ]
+    refused = 0
+    for r in cases:
+        d = _conferral_refusal(p, r)
+        assert d is None or d.allow is False
+        refused += d is not None
+    assert refused > 0
+
+
+async def test_a_deny_naming_a_target_holds_against_an_unnormalised_target(tmp_path):
+    deny = Rule(effect="deny", name="not-bob", actions=("grant", "revoke"), targets=("bob@example.com",))
+    p = _policy(tmp_path, rules=(ALLOW_CONFER, deny))
+    for raw in ("bob@example.com", "BOB@example.com", " Bob@Example.com ", "  bob@example.com"):
+        d = await p.decide(grant_request(by=OWNER, target=raw, confers="read"))
+        assert d.allow is False and d.rule == "not-bob", raw
+    d = await p.decide(revoke_request(by=OWNER, target=" bob@example.com "))
+    assert d.allow is False and d.rule == "not-bob"
+
+
+async def test_a_deny_naming_an_agent_holds_against_an_unnormalised_name(tmp_path):
+    deny = Rule(effect="deny", name="not-n1", actions=("grant",), agents=("n1",))
+    p = _policy(tmp_path, rules=(ALLOW_CONFER, deny))
+    for raw in ("n1", " n1 ", "N1"):
+        d = await p.decide(grant_request(by=OWNER, target="bob@example.com", confers="read", agent=raw))
+        assert d.allow is False and d.rule == "not-n1", raw
+
+
+async def test_reset_and_scope_need_a_grantor_even_when_a_rule_allows_them(tmp_path):
+    p = _policy(tmp_path, rules=(Rule(effect="allow", name="all", actions=("reset", "scope")),))
+    for verb in ("reset", "scope"):
+        for target in ("", "bob@example.com", "stranger@example.com"):
+            d = await p.decide(Request(action=verb, principal=KNOWN_A, agent="n1", target=target))
+            expected = "target not on the roster" if target == "stranger@example.com" else "not a grantor"
+            assert d.allow is False and d.rule == expected, (verb, target)
+        # A grantor with no (or a rostered) target passes the check.
+        assert (await p.decide(Request(action=verb, principal=OWNER, agent="n1"))).allow is True
+        d = await p.decide(Request(action=verb, principal=OWNER, agent="n1", target="stranger@example.com"))
+        assert d.rule == "target not on the roster"
 
 
 async def test_a_policy_without_a_store_has_owners_but_no_delegates():

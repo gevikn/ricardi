@@ -337,12 +337,15 @@ def _conferral_refusal(policy: RulesPolicy, request: Request) -> Decision | None
     nobody else may confer at all. Each refusal is its own `rule`, in this order,
     so the audit log can say which test failed.
     """
-    if request.action not in ("grant", "revoke"):
+    if request.action not in PLANE2_VERBS:
         return None
     # Function-local: grants reaches this module the same way, so a top-level
     # import would close the cycle. Normalisation stays single-sourced there.
     from ricardi.grants import normalise, normalise_name
 
+    # `owns`, `holds` and `tier` each normalise their own arguments as well, so
+    # this is for the roster set and the empty-target guard, not what makes the
+    # authority check safe; do not "simplify" the wrong one.
     name = normalise_name(request.agent)
     target = normalise(request.target)
     who = normalise(request.principal.email)
@@ -352,7 +355,12 @@ def _conferral_refusal(policy: RulesPolicy, request: Request) -> Decision | None
 
     # The roster is the only list of people; a conferral on anyone off it would
     # be a row no decision could ever use. Normalised on both sides.
-    if not target or target not in {normalise(e) for e in policy.roster.values()}:
+    # Required for grant and revoke; reset and scope may not name a person, so
+    # their target is checked only when one is supplied.
+    needs_person = request.action in ("grant", "revoke") or bool(target)
+    if needs_person and (
+        not target or target not in {normalise(e) for e in policy.roster.values()}
+    ):
         return refuse(
             "target not on the roster",
             "That person isn't on the roster, so they can't be given access.",
@@ -385,10 +393,15 @@ def _conferral_refusal(policy: RulesPolicy, request: Request) -> Decision | None
             )
         # A delegate is bounded by their own tier (filled in by `decide` from
         # the store); an owner is bounded only by the rules' ceiling.
+        if delegate and not request.tier:
+            return refuse(
+                "no tier of your own",
+                f"You hold no tier on {request.agent}, so you can't give {confers}.",
+            )
         if delegate and not at_most(confers, request.tier):
             return refuse(
                 "above the grantor",
-                f"You hold {request.tier or 'no tier'} on {request.agent}, so you "
+                f"You hold {request.tier} on {request.agent}, so you "
                 f"can't give {confers}.",
             )
     return None
@@ -477,6 +490,24 @@ class RulesPolicy:
                 else ""
             )
             request = replace(request, tier=tier)
+
+        # Canonicalise the keys every later step compares, once, here. The
+        # conferral check and the grant store already normalise their own
+        # arguments, but `Rule.matches` goes through `_glob`, which lowercases
+        # and strips nothing: left raw, " bob@x.com " slipped past a deny naming
+        # bob@x.com while owns/holds still authorised on the stripped key, so
+        # one decision read two keys. Direction: for a deny this only adds
+        # matches, which subtracts access; for an allow naming `targets` or
+        # `agents` it newly matches a padded value that used to fall to the
+        # default deny, which is intended, and deny-overrides still orders the
+        # two. Function-local import, as in `owns`: grants imports this module.
+        from ricardi.grants import normalise, normalise_name
+
+        request = replace(
+            request,
+            target=normalise(request.target),
+            agent=normalise_name(request.agent),
+        )
 
         # Before the rules, and only ever to refuse. Putting it first is what
         # makes the invariant structural: this branch has no `allow=True` to
