@@ -37,6 +37,8 @@ def test_an_unknown_tier_ranks_below_everything_rather_than_above():
     # "admin" must not out-rank write by sorting later; it is not a tier.
     assert tier_rank("admin") == 0
     assert not at_most("admin", "write")
+    # The guard covers the ceiling too, not only the tier.
+    assert not at_most("read", "admin")
 
 
 def test_a_rule_naming_confers_distinguishes_one_conferral_from_another():
@@ -73,3 +75,27 @@ def test_the_plane_two_verbs_are_exactly_the_four_named():
 async def test_an_undesigned_plane_two_verb_denies_by_default(written_toml):
     policy = load(written_toml(ONE_ASK_ALLOW))
     assert (await policy.decide(Request(action="scope", principal=KNOWN, agent="n1"))).allow is False
+
+
+def test_a_rule_naming_tiers_does_not_match_a_different_tier():
+    rule = Rule(effect="allow", tiers=("write",))
+    assert not rule.matches(Request(action="tool", tier="read", principal=KNOWN))
+
+
+def test_tiers_glob_like_users():
+    rule = Rule(effect="allow", tiers=("wri*",))
+    assert rule.matches(Request(action="tool", tier="write", principal=KNOWN))
+    assert not rule.matches(Request(action="tool", tier="read", principal=KNOWN))
+
+
+def test_a_star_tier_rule_does_not_match_an_empty_tier():
+    # _any_glob refuses an empty value, so absence matches no pattern at all.
+    rule = Rule(effect="allow", tiers=("*",))
+    assert rule.matches(Request(action="tool", tier="read", principal=KNOWN))
+    assert not rule.matches(Request(action="tool", tier="", principal=KNOWN))
+
+
+def test_a_rule_naming_targets_does_not_match_a_different_target():
+    rule = Rule(effect="allow", targets=("*@example.com",))
+    assert not rule.matches(Request(action="grant", target="bob@other.org", principal=KNOWN))
+    assert not rule.matches(Request(action="grant", target="", principal=KNOWN))
