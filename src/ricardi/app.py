@@ -8,7 +8,8 @@ import logging
 
 from ricardi import router
 from ricardi.backends.base import AgentBackend, BackendError, Caller
-from ricardi.policy import ClosedPolicy, PolicyPoint, Request, Resource
+from ricardi.grants import GrantError, GrantStore
+from ricardi.policy import TIERS, ClosedPolicy, PolicyPoint, Request, Resource
 from ricardi.store import ThreadBindings
 from ricardi.transports.base import Inbound, Transport
 
@@ -23,6 +24,7 @@ class Ricardi:
         bindings: ThreadBindings | None = None,
         ack_after: float = 4.0,
         policy: PolicyPoint | None = None,
+        grants: GrantStore | None = None,
     ):
         self.transport = transport
         self.backend = backend
@@ -30,6 +32,10 @@ class Ricardi:
         self.ack_after = ack_after
         # No policy means nothing is permitted, not everything.
         self.policy = policy or ClosedPolicy("none was configured")
+        # Written to only after `decide` has allowed a grant or revoke, and read
+        # only to see which tiers a revoke has to clear. What a person may do is
+        # the policy's to say, never this store's.
+        self.grants = grants
 
     async def start(self) -> None:
         await self.transport.start(self.handle)
@@ -95,6 +101,19 @@ class Ricardi:
             )
             return
 
+        if command.kind in {"bad_grant", "bad_revoke"}:
+            shape = router.GRANT_SHAPE if command.kind == "bad_grant" else router.REVOKE_SHAPE
+            await self._say(
+                inbound,
+                f"I couldn't read that. The shape is {shape}, with the person "
+                "picked from Slack's mention list.",
+            )
+            return
+
+        if command.kind in {"grant", "revoke"}:
+            await self._confer(inbound, command)
+            return
+
         if command.kind == "tell":
             text = command.text
             try:
@@ -137,7 +156,77 @@ class Ricardi:
         self.bindings.bind(inbound.thread, bound, command.flags)
         await self._relay(inbound, bound, command.text)
 
-    async def _permit(self, inbound: Inbound, action: str, agent: str = "") -> bool:
+    async def _confer(self, inbound: Inbound, command: router.Command) -> None:
+        """grant / revoke: ask `decide` first, write only if it allows.
+
+        Nothing is decided here. The tier written is the one the command named,
+        and it is the request's `agent` that lets `decide` look up the
+        grantor's own tier on this name.
+        """
+        action = command.kind
+        person = self._email_for(command.user)
+        if not await self._permit(
+            inbound, action, command.agent, target=person, confers=command.tier
+        ):
+            return
+        by = self._principal(inbound).email
+        if self.grants is None:
+            await self._say(
+                inbound, f"I couldn't record that {action}: no grant store is open."
+            )
+            return
+        name = await self._resolve(command.agent)
+        try:
+            if action == "grant":
+                self.grants.add(
+                    person=person, name=name, verb=command.tier, by=by, granted=True
+                )
+                await self._say(
+                    inbound,
+                    f"<@{command.user}> now holds *{command.tier}* on *{name}*. "
+                    "That records the tier; it does not add anyone to the channel.",
+                )
+                return
+            # Presence (`ask`) is left alone on purpose: removing someone from
+            # the channel is a channel action, and a delegate must not be able
+            # to strip a peer's ability to be addressed. Highest first, so a
+            # failure part-way leaves the lesser tier standing, not the greater.
+            held = [t for t in reversed(TIERS) if self.grants.holds(person, name, t)]
+            for tier in held:
+                self.grants.add(
+                    person=person, name=name, verb=tier, by=by, granted=False
+                )
+        except GrantError as exc:
+            log.error("%s by %s failed: %s", action, by, exc)
+            await self._say(
+                inbound,
+                f"I couldn't record that {action}, so nothing should be assumed "
+                f"changed. The box's log has the detail.",
+            )
+            return
+        if not held:
+            await self._say(
+                inbound, f"<@{command.user}> holds no tier on *{name}*, so there is nothing to take back."
+            )
+            return
+        await self._say(
+            inbound,
+            f"<@{command.user}> no longer holds {' or '.join(held)} on *{name}*.",
+        )
+
+    def _email_for(self, slack_id: str) -> str:
+        """The roster's email for a Slack id, or "" for a stranger."""
+        return self._principal(Inbound(text="", thread="", channel="", user=slack_id)).email
+
+    async def _permit(
+        self,
+        inbound: Inbound,
+        action: str,
+        agent: str = "",
+        *,
+        target: str = "",
+        confers: str = "",
+    ) -> bool:
         """The inbound enforcement point. Every path to an agent passes here."""
         request = Request(
             action=action,
@@ -145,6 +234,8 @@ class Ricardi:
             resource=Resource(channel_id=inbound.channel),
             agent=agent,
             text=inbound.text,
+            target=target,
+            confers=confers,
         )
         try:
             decision = await self.policy.decide(request)

@@ -298,6 +298,37 @@ removes the reason we first called it impossible. It needs the CLI on the
 service `PATH` and `icacls` grants on the config directory and the workspace,
 and it has not been tried yet.
 
+## Letting someone in: `grant` and `revoke`
+
+An owner (an `[[owner]]` entry in `policy.toml`), or someone an owner has
+delegated granting to, can give a person a tier on an agent from Slack:
+
+```
+@ricardi grant @bob read on ricardi
+@ricardi grant @bob write on ricardi
+@ricardi revoke @bob on ricardi
+```
+
+Pick the person from Slack's mention list so Ricardi receives their id; plain
+text such as `bob` is not read as a person. They must be on the `[[identity]]`
+roster, or the answer says so and nothing is written. The tier is `read` or
+`write`, in any case. A delegate can give at most the tier they hold
+themselves; an owner is bounded only by what the rules allow. `revoke` clears
+every tier the person holds on that agent and leaves their presence alone.
+
+**A `grant` records a tier. It does not add anyone to the Slack channel.**
+Adding people to the channel is still done by hand in Slack, before the grant:
+presence and capability are separate on purpose. Ricardi's Slack app does not
+yet have the scope to invite people itself, so a grant that seems to do nothing
+usually means the person was never added. **Someone who is in the channel
+without a grant has presence and nothing more.**
+
+Every grant and revoke, allowed or refused, is a line in the audit log, and a
+refused one writes nothing. Rows are never edited or deleted: a revoke is a
+newer row that supersedes the grant, and `ricardi grants list` shows what is in
+force. An owner whose email is missing from the roster cannot act as one; Ricardi
+logs a warning naming them at startup rather than refusing to start.
+
 ## Check it is actually working
 
 Restarting cleanly is something to find out on a Tuesday afternoon, not during

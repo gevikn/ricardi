@@ -25,6 +25,21 @@ _LIST = re.compile(
 _HELP = re.compile(r"^(?:help|\?)\s*$", re.IGNORECASE)
 _WHO = re.compile(r"^who(?:\s+is\s+this|\s*\?)?\s*$", re.IGNORECASE)
 
+# "grant <@U2> read on ricardi" / "revoke <@U2> on ricardi". Slack sends a
+# mention as <@U123> or <@U123|name>. The tier is any word here: whether it is a
+# tier is the escalation check's to say, so a typo is audited as "not a tier"
+# rather than falling out of the grammar unseen.
+_USER = r"<@(?P<user>[A-Za-z0-9]+)(?:\|[^>]*)?>"
+_NAME = r"(?P<name>[A-Za-z0-9_-]+)"
+_GRANT = re.compile(
+    rf"^grant\s+{_USER}\s+(?P<tier>\S+)\s+on\s+{_NAME}\s*$", re.IGNORECASE
+)
+_REVOKE = re.compile(rf"^revoke\s+{_USER}\s+on\s+{_NAME}\s*$", re.IGNORECASE)
+_CONFER_WORD = re.compile(r"^(?P<verb>grant|revoke)\b", re.IGNORECASE)
+
+GRANT_SHAPE = "`grant @person <read|write> on <agent>`"
+REVOKE_SHAPE = "`revoke @person on <agent>`"
+
 # A leading "-ro". Only at the very front, and only whole words, so a hyphen
 # anywhere in the message -- "pytest --cov -x", "the -ro flag" -- is text.
 _FLAG = re.compile(r"^-(?P<name>[A-Za-z]+)(?=\s|$)\s*")
@@ -43,7 +58,7 @@ FLAGS = {
 class Command:
     """What the message asked for.
 
-    kind is one of: list, tell, say, who, help, empty.
+    kind is one of: list, tell, say, who, help, empty, grant, revoke, bad_grant, bad_revoke.
     `tell` names its agent; `say` means "the agent this thread is already
     talking to", which only the caller knows.
     """
@@ -58,6 +73,11 @@ class Command:
     # original: "tell me what version we are" is an agent called "me" here,
     # and a caller who knows there is no such agent wants the sentence back.
     raw: str = ""
+    # grant and revoke only: the Slack id mentioned, and for a grant the tier,
+    # already stripped and lowercased so "Read" works without loosening the
+    # check that refuses anything not exactly a tier.
+    user: str = ""
+    tier: str = ""
 
 
 def parse(message: str) -> Command:
@@ -92,6 +112,21 @@ def parse(message: str) -> Command:
     if _WHO.match(text):
         return Command(kind="who", flags=found, raw=raw)
 
+    m = _CONFER_WORD.match(text)
+    if m:
+        verb = m.group("verb").lower()
+        parsed = (_GRANT if verb == "grant" else _REVOKE).match(text)
+        if not parsed:
+            return Command(kind=f"bad_{verb}", raw=raw)
+        return Command(
+            kind=verb,
+            agent=parsed.group("name"),
+            user=parsed.group("user"),
+            tier=parsed.group("tier").strip().lower() if verb == "grant" else "",
+            flags=found,
+            raw=raw,
+        )
+
     m = _TELL.match(text)
     if m:
         body = m.group("text").strip()
@@ -122,6 +157,7 @@ HELP = (
     "- `tell <agent> <message>` - send that agent a message\n"
     "- `<agent>: <message>` - the same thing, shorter\n"
     "- `who` - which agent this thread is talking to\n"
+    f"- {GRANT_SHAPE} / {REVOKE_SHAPE} - owners only: give or take back a tier\n"
     "Once a thread is talking to an agent, just reply in the thread and I pass "
     "it along.\n\n"
     "Flags go first, and only ever take something away:\n"
