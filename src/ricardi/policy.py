@@ -325,6 +325,73 @@ def _flag_refusal(request: Request) -> Decision | None:
     return None
 
 
+def _conferral_refusal(policy: RulesPolicy, request: Request) -> Decision | None:
+    """Who may confer what. Returns a refusal, or None to carry on.
+
+    Never returns an allow, for the same reason as `_flag_refusal`: carrying on
+    only hands the request to the rules, whose ceiling still decides. Passing
+    here is "not refused by this check" and nothing more.
+
+    The authority: an owner of that name may confer any tier the rules permit; a
+    delegate holding the `grant` verb may confer at or below their own tier;
+    nobody else may confer at all. Each refusal is its own `rule`, in this order,
+    so the audit log can say which test failed.
+    """
+    if request.action not in ("grant", "revoke"):
+        return None
+    # Function-local: grants reaches this module the same way, so a top-level
+    # import would close the cycle. Normalisation stays single-sourced there.
+    from ricardi.grants import normalise, normalise_name
+
+    name = normalise_name(request.agent)
+    target = normalise(request.target)
+    who = normalise(request.principal.email)
+
+    def refuse(rule: str, reason: str) -> Decision:
+        return Decision(allow=False, reason=reason, rule=rule)
+
+    # The roster is the only list of people; a conferral on anyone off it would
+    # be a row no decision could ever use. Normalised on both sides.
+    if not target or target not in {normalise(e) for e in policy.roster.values()}:
+        return refuse(
+            "target not on the roster",
+            "That person isn't on the roster, so they can't be given access.",
+        )
+
+    owner = policy.owns(who, name)
+    delegate = (
+        not owner
+        and policy.grants is not None
+        and policy.grants.holds(who, name, "grant")
+    )
+    if not owner and not delegate:
+        return refuse(
+            "not a grantor",
+            f"Only an owner of {request.agent or 'this name'}, or someone it has "
+            "delegated granting to, can do that.",
+        )
+
+    if request.action == "grant":
+        # A conferral must be a real tier for everyone, owners included: at_most
+        # (not tier_rank) so "admin" is not the floor, and the empty string is
+        # not a tier to confer.
+        confers = request.confers
+        if not confers or not at_most(confers, TIERS[-1]):
+            return refuse(
+                "above the grantor",
+                f"{confers!r} isn't a tier. Use one of: {', '.join(TIERS)}.",
+            )
+        # A delegate is bounded by their own tier (filled in by `decide` from
+        # the store); an owner is bounded only by the rules' ceiling.
+        if delegate and not at_most(confers, request.tier):
+            return refuse(
+                "above the grantor",
+                f"You hold {request.tier or 'no tier'} on {request.agent}, so you "
+                f"can't give {confers}.",
+            )
+    return None
+
+
 def _tool_matches(tool: str, patterns: tuple[str, ...]) -> bool:
     """Match a tool name, expanding the `shell` alias to every platform's."""
     expanded: list[str] = []
@@ -460,6 +527,13 @@ class RulesPolicy:
                     reason=self._default_reason(request),
                     rule="no grant",
                 )
+
+        # After the roster refusal, before the allows: the same placement as the
+        # grant check, and refuse-only like it, so who-may-confer can only add a
+        # requirement and the rules' ceiling still decides what remains.
+        refused = _conferral_refusal(self, request)
+        if refused is not None:
+            return refused
 
         # A name reaches its own roots and no further, whatever a rule's
         # `path_under` says. `path_under` is written per rule, so it is one root
