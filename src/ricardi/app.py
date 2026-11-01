@@ -205,7 +205,7 @@ class Ricardi:
                 self.grants.add(
                     person=person, name=name, verb=tier, by=by, granted=False
                 )
-        except GrantError as exc:
+        except GrantError:
             log.exception("%s by %s failed", action, by)
             await self._say(
                 inbound,
@@ -215,7 +215,8 @@ class Ricardi:
             return
         if not held:
             await self._say(
-                inbound, f"<@{command.user}> holds no tier on *{name}*, so there is nothing to take back."
+                inbound,
+                f"<@{command.user}> holds no tier on *{name}*, so there is nothing to take back.",
             )
             return
         await self._say(

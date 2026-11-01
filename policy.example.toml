@@ -55,9 +55,11 @@ email = "them@example.com"
 # file the bot mounts read-only: the database never bootstraps itself, and there
 # is no self-service path to becoming an owner. Changing an owner is a reviewed
 # diff to this file and nothing else. An owner is bound to one name, not to all.
-# There is no `tier` key: what an owner may confer is the name's ceiling, which
-# the rules above already state, and a second place to say it is a second place
-# to get it wrong.
+# There is no `tier` key. This entry says *who* may confer; the rule below
+# naming actions = ["grant", "revoke"] is what lets the action through at all,
+# and its optional `confers` list is the only ceiling on what an owner may
+# give. Nothing links a conferred tier to the tool rules, so if you want a
+# ceiling, write it there.
 [[owner]]
 agent = "shared"
 email = "you@example.com"
@@ -76,6 +78,14 @@ effect   = "allow"
 actions  = ["ask", "list"]
 users    = ["you@example.com", "them@example.com"]
 channels = ["C00000000000"]          # the channel id, not its name
+
+[[rule]]
+name     = "owners may hand out tiers, in the channel we agreed on"
+effect   = "allow"
+actions  = ["grant", "revoke"]
+users    = ["you@example.com"]
+channels = ["C00000000000"]
+# A ceiling on what may be conferred, if you want one: confers = ["read"]
 
 # Reaching a second repository is a second rule. Without one, everyone named
 # above can address every agent in the catalogue.

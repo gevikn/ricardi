@@ -52,7 +52,7 @@ READING_TOOLS = frozenset({"Read", "Grep", "Glob", "NotebookRead"})
 # Enforced by tool name, never by reading a command: the shell is not in this
 # set, so a reader can still cause a write through it. That is documented in
 # docs/access-simulation.md rather than engineered around here.
-WRITING_TOOLS = frozenset({"Write", "Edit", "NotebookEdit"})
+WRITING_TOOLS = frozenset({"Write", "Edit", "NotebookEdit", "MultiEdit"})
 _WRITING_LOWER = frozenset(t.lower() for t in WRITING_TOOLS)
 
 # Tool inputs name their path under different keys depending on the tool.
@@ -129,7 +129,9 @@ class Request:
     # The asker's tier on this name: "", "read" or "write". Filled in by
     # `decide` from the grant store and NEVER by a caller -- a caller-supplied
     # tier would be a way to widen oneself, so whatever arrives here from
-    # outside is overwritten.
+    # outside is overwritten. The exception is deliberate: with no store open
+    # (`grants=None`) a caller's tier is left alone, so that such a policy
+    # decides exactly as it did before tiers existed.
     tier: str = ""
     # Whom a plane-2 verb (grant, revoke, reset, scope) is aimed at: an email.
     target: str = ""
@@ -275,7 +277,7 @@ def _tier_refusal(request: Request) -> Decision | None:
     An empty tier is "unconstrained by tier", not "none" -- enforcing none waits
     for the build step where someone with presence and no tier exists.
     """
-    if request.action != "tool" or request.tier != "read":
+    if request.action != "tool" or request.tier.lower() != "read":
         return None
     # Case-insensitive, like `_glob`: the rules match tool names that way, and a
     # check that disagrees with them is how `GIT PUSH` once evaded a deny.
@@ -405,6 +407,17 @@ def _conferral_refusal(policy: RulesPolicy, request: Request) -> Decision | None
                 "above the grantor",
                 f"You hold {request.tier} on {request.agent}, so you "
                 f"can't give {confers}.",
+            )
+    elif request.action == "revoke" and delegate:
+        # Silence in the design on revocation reads as "the same bound", not "no
+        # bound": authority runs downhill, so a delegate may take back only what
+        # they could have given. An owner (not a delegate) stays unbounded.
+        held = policy.grants.tier(target, name)
+        if held and not at_most(held, request.tier):
+            return refuse(
+                "their tier is above yours",
+                f"They hold {held} on {request.agent}, which is above what you "
+                "hold, so you can't take it back.",
             )
     return None
 
@@ -616,6 +629,11 @@ class RulesPolicy:
         return "That isn't permitted here."
 
     def _default_reason(self, request: Request) -> str:
+        if request.action in ("grant", "revoke"):
+            return (
+                f"No rule allows {request.action} here. Ask whoever runs this "
+                f"deployment to add a rule with actions = [\"{request.action}\"]."
+            )
         if request.action == "tool":
             what = summarise(request.tool, request.tool_input)
             return (
@@ -646,7 +664,10 @@ class ClosedPolicy:
         return Principal(id=slack_user_id)
 
     async def decide(self, request: Request) -> Decision:
-        return Decision(allow=False, reason=f"Policy isn't loaded, so nothing is allowed: {self.why}")
+        return Decision(
+            allow=False,
+            reason=f"Policy isn't loaded, so nothing is allowed: {self.why}",
+        )
 
 
 def load_limits(path: str | os.PathLike[str]) -> tuple[int, int]:

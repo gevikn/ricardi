@@ -139,7 +139,7 @@ async def test_a_delegate_cannot_give_more_than_they_hold(world):
 
 async def test_an_unparseable_grant_explains_the_shape(world):
     app, store, transport, *_ = world
-    await app.handle(inbound("grant bob everything", user="U1"))
+    await app.handle(inbound("grant bob everything on n1", user="U1"))
     assert "grant @person" in said(transport)
     assert store.history() == ()
 
@@ -176,7 +176,7 @@ def test_flags_survive_a_malformed_grant():
 
 async def test_an_unparseable_revoke_explains_the_shape(world):
     app, store, transport, *_ = world
-    await app.handle(inbound("revoke bob", user="U1"))
+    await app.handle(inbound("revoke bob on n1", user="U1"))
     assert "revoke @person" in said(transport)
 
 

@@ -36,6 +36,12 @@ _GRANT = re.compile(
 )
 _REVOKE = re.compile(rf"^revoke\s+{_USER}\s+on\s+{_NAME}\s*$", re.IGNORECASE)
 _CONFER_WORD = re.compile(r"^(?P<verb>grant|revoke)(?=\s|$)", re.IGNORECASE)
+# "grant" and "revoke" open ordinary sentences ("revoke the stale token in
+# config.py"), and in a thread already talking to an agent that is the normal
+# input. So the verb alone is not a conferral: it also needs a Slack mention, or
+# to end in "on <word>" (the plain-text-name case, which gets the shape).
+_MENTION = re.compile(r"<@[A-Za-z0-9]+(?:\|[^>]*)?>")
+_ENDS_ON_WORD = re.compile(r"\bon\s+\S+\s*$", re.IGNORECASE)
 
 GRANT_SHAPE = "`grant @person <read|write> on <agent>`"
 REVOKE_SHAPE = "`revoke @person on <agent>`"
@@ -113,7 +119,7 @@ def parse(message: str) -> Command:
         return Command(kind="who", flags=found, raw=raw)
 
     m = _CONFER_WORD.match(text)
-    if m:
+    if m and (_MENTION.search(text) or _ENDS_ON_WORD.search(text)):
         verb = m.group("verb").lower()
         parsed = (_GRANT if verb == "grant" else _REVOKE).match(text)
         if not parsed:
@@ -157,7 +163,8 @@ HELP = (
     "- `tell <agent> <message>` - send that agent a message\n"
     "- `<agent>: <message>` - the same thing, shorter\n"
     "- `who` - which agent this thread is talking to\n"
-    f"- {GRANT_SHAPE} / {REVOKE_SHAPE} - owners, and people they have let grant: give or take back a tier\n"
+    f"- {GRANT_SHAPE} / {REVOKE_SHAPE} - owners, and people they have let grant: "
+    "give or take back a tier\n"
     "Once a thread is talking to an agent, just reply in the thread and I pass "
     "it along.\n\n"
     "Flags go first, and only ever take something away:\n"

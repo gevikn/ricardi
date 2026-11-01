@@ -156,6 +156,10 @@ there. A *missing* store is the intended pre-seed state and not an error; a
 Unlike `threads.json` and `sessions.json`, which shrug off corruption so as not
 to stop Ricardi answering, serving with no grants would deny everyone silently.
 
+Once tiers land, run `grants seed --by <your email>` again to write the tier
+rows. Nothing breaks if you forget: an absent tier means "unconstrained by
+tier", which is how every deployment behaved before tiers existed.
+
 Seeding grants what `policy.toml` already permits and nothing else, and it is
 idempotent: running it again adds nothing that is already in force, so it is
 safe to repeat.
@@ -239,6 +243,7 @@ somewhere else.
 | "Tracked files are modified" | Someone edited the checkout on the box. Resolve it there; the job will not discard it. |
 | Rebuild succeeds, health check fails | Read `docker compose logs ricardi`. A bad `policy.toml` fails at startup and never reaches Slack. |
 | Every `ask` refused, and `policy.toml` looks right | The grant store is empty. `docker compose exec ricardi python -m ricardi.cli grants list` shows nothing; run `grants seed` (see above). |
+| `list` or a tool call refused with "I couldn't check whether that's permitted" | `decide` reads the grant store for `list` and `tool` as well as `ask`, so a store that cannot be read refuses those too. Check `grants.db` is readable. |
 | Startup fails naming `grants.db` | The grant store is corrupt. It is deliberately not ignored. Restore the newest snapshot from `state/backups/`, or recover by hand; see below. |
 | Rolled back, and the rollback is also broken | The `:rollback` tag is one deep. `git checkout <older sha> && docker compose up -d --build` on the box. |
 | Runner gone after an OS upgrade | The service unit survives, the runner binary may need `./config.sh remove` and re-registering. |

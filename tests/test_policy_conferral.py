@@ -130,8 +130,46 @@ async def test_a_delegate_with_no_tier_cannot_confer_anything(tmp_path):
     assert d.rule != "above the grantor"
 
 
-async def test_revoke_is_not_bounded_by_the_grantors_tier(policy):
+async def test_an_owner_may_revoke_anyone_whatever_their_tier(policy):
+    policy.grants.add(person="bob@example.com", name="n1", verb="write", by="t")
+    assert (await policy.decide(revoke_request(by=OWNER, target="bob@example.com"))).allow is True
+    policy.grants.add(person="owner@example.com", name="n1", verb="write", by="t")
+    assert (await policy.decide(revoke_request(by=OWNER, target="delegate@example.com"))).allow is True
+
+
+async def test_a_delegate_may_revoke_at_or_below_their_own_tier(policy):
+    # bob holds nothing, then read (== the delegate's own): both allowed.
     assert (await policy.decide(revoke_request(by=DELEGATE_READ, target="bob@example.com"))).allow is True
+    policy.grants.add(person="bob@example.com", name="n1", verb="read", by="t")
+    assert (await policy.decide(revoke_request(by=DELEGATE_READ, target="bob@example.com"))).allow is True
+
+
+async def test_a_delegate_may_not_revoke_a_tier_above_their_own(policy):
+    policy.grants.add(person="bob@example.com", name="n1", verb="write", by="t")
+    d = await policy.decide(revoke_request(by=DELEGATE_READ, target="bob@example.com"))
+    assert d.allow is False and d.rule == "their tier is above yours"
+    # Nothing was written by the refusal.
+    assert policy.grants.tier("bob@example.com", "n1") == "write"
+
+
+async def test_a_delegate_with_no_tier_may_revoke_only_the_tierless(tmp_path):
+    p = _policy(tmp_path)
+    p.grants.add(person="delegate@example.com", name="n1", verb="read", by="t", granted=False)
+    p.grants.add(person="bob@example.com", name="n1", verb="read", by="t")
+    d = await p.decide(revoke_request(by=DELEGATE_READ, target="bob@example.com"))
+    assert d.allow is False and d.rule == "their tier is above yours"
+
+
+async def test_an_authorised_owner_with_no_conferral_rule_is_not_told_about_channels(tmp_path):
+    p = _policy(tmp_path, rules=(ALLOW_ASK_ONLY,))
+    for req in (
+        grant_request(by=OWNER, target="bob@example.com", confers="read"),
+        revoke_request(by=OWNER, target="bob@example.com"),
+    ):
+        d = await p.decide(req)
+        assert d.allow is False
+        assert "channel" not in d.reason and "agent in" not in d.reason
+        assert req.action in d.reason.lower() or "grant" in d.reason.lower()
 
 
 async def test_revoke_still_needs_authority_and_a_rostered_target(policy):

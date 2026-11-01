@@ -72,4 +72,30 @@ def test_a_blank_email_is_never_an_owner(written_toml):
 
 @pytest.mark.parametrize("policy_file", ["policy.example.toml", "docker/policy.example.toml"])
 def test_both_examples_document_an_owner_and_still_load(policy_file):
-    assert load(policy_file).owners
+    import tomllib
+    from pathlib import Path
+
+    owners = load(policy_file).owners
+    assert owners
+    agents_file = Path(policy_file).with_name("agents.example.toml")
+    names = {a["name"] for a in tomllib.loads(agents_file.read_text(encoding="utf-8"))["agent"]}
+    # An owner of a name the catalogue never defines is an owner of nothing.
+    assert set(owners) <= names, (policy_file, set(owners) - names)
+
+
+@pytest.mark.parametrize("policy_file", ["policy.example.toml", "docker/policy.example.toml"])
+async def test_an_example_owner_can_actually_grant_under_the_shipped_rules(policy_file):
+    from ricardi.policy import Request
+
+    p = load(policy_file)
+    (name, (email, *_)), *_ = p.owners.items()
+    slack = next(s for s, e in p.roster.items() if e == email)
+    channel = next(
+        c for r in p.rules if "grant" in (r.actions or ()) for c in (r.channels or ())
+    )
+    from ricardi.policy import Resource
+
+    d = await p.decide(Request(
+        action="grant", principal=p.principal(slack), resource=Resource(channel_id=channel),
+        agent=name, target=email, confers="read"))
+    assert d.allow is True, d

@@ -192,7 +192,7 @@ effect = "allow"
 actions = ["tool"]
 tools = ["Read", "Write", "Edit", "Bash"]
 """))
-    for tool in ("MultiEdit", "Patch", "TodoWrite"):
+    for tool in ("Patch", "ApplyPatch", "TodoWrite"):
         for tier in ("read", "write"):
             d = await policy.decide(_tool(tool, tier))
             assert d.allow is False and d.rule == "", (tool, tier, d)
@@ -205,8 +205,20 @@ async def test_the_tier_check_is_case_insensitive_like_the_rules(written_toml):
         assert d.allow is False and d.rule == "tier", tool
 
 
-def test_the_writing_tools_are_the_three_named():
-    assert WRITING_TOOLS == frozenset({"Write", "Edit", "NotebookEdit"})
+def test_the_writing_tools_are_the_four_named():
+    assert WRITING_TOOLS == frozenset({"Write", "Edit", "NotebookEdit", "MultiEdit"})
+
+
+async def test_a_reader_is_refused_multiedit_even_under_a_tools_less_allow(written_toml):
+    policy = load(written_toml(ALLOW_ALL))
+    d = await policy.decide(_tool("MultiEdit", "read"))
+    assert d.allow is False and d.rule == "tier"
+
+
+def test_the_tier_comparison_is_case_insensitive_too():
+    for tier in ("READ", "Read"):
+        d = _tier_refusal(_tool("Write", tier))
+        assert d is not None and d.rule == "tier", tier
 
 
 def test_the_tier_refusal_cannot_allow_anything():
