@@ -375,10 +375,12 @@ def _conferral_refusal(policy: RulesPolicy, request: Request) -> Decision | None
         # A conferral must be a real tier for everyone, owners included: at_most
         # (not tier_rank) so "admin" is not the floor, and the empty string is
         # not a tier to confer.
+        # Its own rule, ahead of the tier comparison: a typo or a non-tier is a
+        # malformed command, not an escalation, and the audit must say which.
         confers = request.confers
-        if not confers or not at_most(confers, TIERS[-1]):
+        if confers not in TIERS:
             return refuse(
-                "above the grantor",
+                "not a tier",
                 f"{confers!r} isn't a tier. Use one of: {', '.join(TIERS)}.",
             )
         # A delegate is bounded by their own tier (filled in by `decide` from

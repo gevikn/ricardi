@@ -109,7 +109,11 @@ async def test_a_roster_entry_is_normalised_too(tmp_path):
 async def test_a_conferral_that_is_not_a_tier_is_refused(policy):
     for value in ("admin", "exec", "", "READ "):
         assert (await policy.decide(grant_request(by=OWNER, target="bob@example.com", confers=value))).allow is False
-    d = await policy.decide(grant_request(by=OWNER, target="bob@example.com", confers="admin"))
+    for value in ("admin", "exec", "grant", "", "READ "):
+        d = await policy.decide(grant_request(by=OWNER, target="bob@example.com", confers=value))
+        assert d.rule == "not a tier", value
+    # Distinct from a real tier that outranks a delegate's own.
+    d = await policy.decide(grant_request(by=DELEGATE_READ, target="bob@example.com", confers="write"))
     assert d.rule == "above the grantor"
 
 
