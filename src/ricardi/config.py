@@ -51,9 +51,11 @@ class Settings:
     # Where a dead credential is announced. Ricardi has to be a member of
     # the channel to post into it; empty leaves the log as the only monitor.
     alert_channel: str = ""
-    # Seconds between credential checks. Zero turns the check off, which is
-    # a decision rather than a default: without it an expired token looks
-    # exactly like a box somebody switched off.
+    # How long Ricardi goes unasked before checking the credential herself.
+    # A turn anyone asked for counts as a check, so on a channel in use the
+    # probe rarely runs. Zero turns it off, which is a decision rather than a
+    # default: without it an expired token looks exactly like a box somebody
+    # switched off.
     health_every: float = 3600.0
 
 

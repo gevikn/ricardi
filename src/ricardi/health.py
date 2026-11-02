@@ -15,10 +15,15 @@ is not readable from the environment variable that carries it; an API key looks
 identical whether or not it has been revoked. The probe costs a fraction of a
 cent and is the only check that cannot be quietly wrong.
 
-What this deliberately does not do: watch real turns. A turn that fails for a
-person has already told that person -- they are looking at the error in the
-thread. The gap worth closing is the quiet weekend, when the credential dies
-and nobody is there to ask.
+Real turns answer the same question, so they report through the same
+bookkeeping: `saw_failure` and `saw_success` are the seam, `check` is one probe
+that calls them, and the probe runs only when no real turn has succeeded inside
+the interval. An earlier version of this module watched the timer alone, on the
+argument that a turn which fails for a person has already told that person. It
+had -- in the thread, as "Something broke on my side", which is not the same as
+the channel being told that the credential is dead and what to do about it.
+Observed cost of the difference: about forty-five minutes of two people
+guessing, and one of them SSHing into the box.
 """
 
 from __future__ import annotations
@@ -264,6 +269,10 @@ class CredentialWatch:
         # Whether the channel has been told. Not the same as "is it failing":
         # two failures are a condition nobody has been bothered with yet.
         self._announced = False
+        # When anything last proved the credential -- a probe or a real turn.
+        # None until something has. The timer defers to this: a channel that
+        # is being answered needs no probe, and a quiet one still gets them.
+        self._last_ok: float | None = None
 
     @property
     def announced(self) -> bool:
@@ -273,44 +282,75 @@ class CredentialWatch:
     def failures(self) -> int:
         return self._failures
 
+    @property
+    def last_ok(self) -> float | None:
+        """When the credential was last proved, or None if it never was."""
+        return self._last_ok
+
     async def check(self) -> bool:
-        """One probe. Announces a transition, and never raises."""
+        """One probe, through the same bookkeeping a real turn uses."""
         try:
             await self._probe()
         except asyncio.CancelledError:
             raise
         except BaseException as exc:  # noqa: BLE001 - a probe may fail any way
-            self._failures += 1
-            self._last_error = (
-                redact(str(exc)) if isinstance(exc, ProbeFailed) else describe(exc)
-            )
-            if self._failures == 1:
-                self._first_failure = self._clock()
-            log.warning(
-                "credential check failed (%d in a row): %s",
-                self._failures,
-                self._last_error,
-            )
-            if self._failures >= self._streak and not self._announced:
-                self._announced = True
-                await self._say(self.down_message(), logging.ERROR)
+            await self.saw_failure(exc)
             return False
+        # Read before the success clears it: a probe that merely confirms
+        # health is the heartbeat, while a recovery has its own announcement.
+        quiet = not self._failures and not self._announced
+        await self.saw_success()
+        if quiet:
+            # One line an hour, which doubles as a heartbeat: on a box nobody
+            # is sitting at, the last of these in state/service.log is when
+            # Ricardi was last alive and authenticating.
+            log.info("credential ok")
+        return True
 
+    async def saw_failure(self, exc: BaseException) -> None:
+        """Something that needed the credential failed. Never raises.
+
+        Called by the probe, and by a real turn that failed in a way the
+        credential explains. Whichever it was, the streak, the clock and the
+        announce-once are the same bookkeeping -- so a failing channel and a
+        failing probe cannot tell anyone twice, and three failures in a row
+        are three failures however they were discovered.
+        """
+        self._failures += 1
+        self._last_error = (
+            redact(str(exc)) if isinstance(exc, ProbeFailed) else describe(exc)
+        )
+        if self._failures == 1:
+            self._first_failure = self._clock()
+        log.warning(
+            "credential check failed (%d in a row): %s",
+            self._failures,
+            self._last_error,
+        )
+        if self._failures >= self._streak and not self._announced:
+            self._announced = True
+            await self._say(self.down_message(), logging.ERROR)
+
+    async def saw_success(self) -> None:
+        """Something that needed the credential worked. Never raises.
+
+        An answered turn is better evidence than a probe, because it is the
+        thing the probe stands in for. It is also free and immediate, which is
+        what lets `run` skip an interval altogether.
+
+        No heartbeat line here: this runs on every answered message, and a log
+        line each would bury the hourly one it is meant to be read beside.
+        """
+        self._last_ok = self._clock()
         if self._announced:
             self._announced = False
             down_for = max(0.0, self._clock() - self._first_failure)
             self._failures = 0
             await self._say(self.up_message(down_for), logging.WARNING)
-            return True
+            return
         if self._failures:
             log.info("credential ok, after %d failure(s)", self._failures)
-        else:
-            # One line an hour, which doubles as a heartbeat: on a box nobody
-            # is sitting at, the last of these in state/service.log is when
-            # Ricardi was last alive and authenticating.
-            log.info("credential ok")
         self._failures = 0
-        return True
 
     async def run(self) -> None:
         """Check now, then keep checking. Cancel the task to stop it.
@@ -320,17 +360,29 @@ class CredentialWatch:
         with a dead credential should not look healthy for an hour.
         """
         log.info(
-            "credential check every %s, %s after a failure, announcing at %d in a row",
+            "credential check every %s, %s after a failure, announcing at %d in "
+            "a row; an answered turn inside the interval stands in for a probe",
             _ago(self._every),
             _ago(self._retry),
             self._streak,
         )
+        ok = await self.check()
         while True:
-            ok = await self.check()
             # The fast retry applies only while a failure is unconfirmed. Once
             # the channel has been told there is nothing to hurry for, and the
             # ordinary interval is also how recovery gets noticed.
             await self._sleep(self._every if ok or self._announced else self._retry)
+            if self._failures == 0 and self._last_ok is not None:
+                idle = self._clock() - self._last_ok
+                if idle < self._every:
+                    # Someone was answered inside the interval, which proves
+                    # the credential better than a probe would and costs
+                    # nothing. A pending failure is never skipped this way:
+                    # the streak must not depend on who happens to be asking.
+                    log.debug("credential proved by a real turn %s ago", _ago(idle))
+                    ok = True
+                    continue
+            ok = await self.check()
 
     # -- what it says -----------------------------------------------------
     def down_message(self) -> str:

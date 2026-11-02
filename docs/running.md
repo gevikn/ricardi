@@ -393,7 +393,7 @@ is a WebSocket this process dials out and keeps. The Claude credential expires
 on a schedule nobody documents. When the credential goes, Slack is still
 perfectly healthy — so the half that works can report the half that does not.
 
-On by default, hourly. Give it a channel and it says so there:
+On by default. Give it a channel and it says so there:
 
 ```toml
 [ricardi]
@@ -401,9 +401,24 @@ alert_channel = "C0123456789"   # Ricardi has to be a member of it
 health_every = 3600.0           # seconds between checks; 0 turns it off
 ```
 
-It runs one two-word turn in a session of its own, so nothing lands in an
-agent's transcript, and the same tool gate the agents use is installed on it so
-nothing can run. A fraction of a cent an hour.
+**Every real turn is a check.** An answered question proves the credential
+better than any probe, and a failed one that reads as an auth or billing
+problem counts towards the alarm -- so on a channel in use Ricardi reports the
+outage to the channel at about the moment the first person runs into it, rather
+than up to an hour later. The timer is the fallback for the quiet weekend: it
+probes only when nothing has succeeded inside the interval, which on a busy
+channel means never.
+
+An unrecognised error from a real turn is left alone, deliberately. "I have no
+agent called *me*" is the same kind of exception as an expired token, and a
+monitor that announces a dead credential because somebody mistyped a name is a
+monitor somebody mutes. The probe keeps the opposite rule -- it alerts on
+anything, because nothing else was asking.
+
+The probe itself runs one two-word turn in a session of its own, so nothing
+lands in an agent's transcript, and the same tool gate the agents use is
+installed on it so nothing can run. A fraction of a cent, when it runs at
+all.
 
 Nothing short of a real turn would do. `claude --version` does not
 authenticate, the OAuth token's expiry is not readable from the environment
@@ -421,11 +436,12 @@ which is the number that says how much of a soak week to throw away.
 
 Three deliberate choices behind that:
 
-- **Three failures before it speaks.** One failed probe is a blip; three is a
+- **Three failures before it speaks.** One failure is a blip; three is a
   condition. A monitor that cries wolf gets muted, and a muted monitor reports
-  nothing at all. It retries after a minute while the first failures are
-  unconfirmed, so a real outage is announced in about two minutes rather than
-  three hours.
+  nothing at all. The three are counted across both kinds: three failed turns,
+  three failed probes, or any mix. While the first failures are unconfirmed the
+  probe retries after a minute rather than waiting out the interval, so even an
+  idle box announces a real outage in about two minutes.
 - **It speaks even for errors it does not recognise.** Classification only
   picks the advice — re-issue the credential, top up the account, wait out a
   rate limit. It never decides whether to alert. A monitor that went quiet
@@ -435,8 +451,10 @@ Three deliberate choices behind that:
   kind that quotes back what it was handed, so anything shaped like a token is
   masked before the message is sent.
 
-A healthy check logs one line, so the last `credential ok` in
-`state/service.log` is both a heartbeat and the time it last authenticated.
+A healthy probe logs one line, so the last `credential ok` in
+`state/service.log` is both a heartbeat and the time it last authenticated. A
+real turn does not log one of its own -- there would be one per message, and
+they would bury the heartbeat they are meant to be read beside.
 
 With no `alert_channel` set it still logs all of it at `ERROR`, so
 `state/service.log` is the fallback monitor. It will tell you either way; the

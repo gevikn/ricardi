@@ -314,3 +314,157 @@ async def test_it_retries_quickly_then_backs_off_once_it_has_told_you():
     # Fast while the failure is unconfirmed; the ordinary interval afterwards,
     # which is also how recovery gets noticed.
     assert sleep.delays == [60.0, 3600.0, 3600.0]
+
+
+# --- real turns are checks too -------------------------------------------
+#
+# The probe answers "does the credential work?" once an hour. Every real turn
+# answers the same question for free, and sooner. These tests pin the seam
+# that lets a turn do the reporting: the bookkeeping -- the streak, the clock,
+# the announce-once -- has to be the same bookkeeping, or the channel gets
+# told twice or not at all.
+
+
+class Hand:
+    """A clock you move by hand."""
+
+    def __init__(self, t: float = 0.0):
+        self.t = t
+
+    def __call__(self) -> float:
+        return self.t
+
+    def advance(self, by: float) -> None:
+        self.t += by
+
+
+class Winding(Clockwork):
+    """A sleep that moves the clock, the way real sleeping does."""
+
+    def __init__(self, hand: Hand, stop_after: int):
+        super().__init__(stop_after)
+        self.hand = hand
+
+    async def __call__(self, delay: float) -> None:
+        self.hand.advance(delay)
+        await super().__call__(delay)
+
+
+class Chatty(Winding):
+    """Someone asks a question half way through every interval."""
+
+    def __init__(self, hand: Hand, stop_after: int):
+        super().__init__(hand, stop_after)
+        self.watch: CredentialWatch | None = None
+
+    async def __call__(self, delay: float) -> None:
+        self.hand.advance(delay / 2)
+        assert self.watch is not None
+        await self.watch.saw_success()
+        self.hand.advance(delay / 2)
+        await Clockwork.__call__(self, delay)
+
+
+async def test_failures_from_real_turns_reach_the_streak():
+    posted = Posted()
+    w = watch(Probe(), posted, streak=2)
+    await w.saw_failure(ProbeFailed(EXPIRED))
+    assert posted.texts == []
+    assert w.failures == 1
+    await w.saw_failure(ProbeFailed(EXPIRED))
+    assert len(posted.texts) == 1
+    assert w.announced
+
+
+async def test_a_real_answer_announces_the_recovery():
+    posted = Posted()
+    hand = Hand()
+    w = watch(Probe(), posted, streak=1, clock=hand)
+    await w.saw_failure(ProbeFailed(EXPIRED))
+    assert w.announced
+    hand.advance(300.0)
+    await w.saw_success()
+    assert not w.announced
+    assert "working again" in posted.texts[-1]
+    assert "5m" in posted.texts[-1]
+
+
+async def test_a_real_answer_leaves_no_heartbeat_of_its_own(caplog):
+    # saw_success runs on every answered message. One log line each would
+    # bury the hourly heartbeat it is meant to be read beside.
+    w = watch(Probe(), None)
+    with caplog.at_level(logging.INFO, logger="ricardi.health"):
+        await w.saw_success()
+    assert not [r for r in caplog.records if "credential ok" == r.getMessage()]
+
+
+async def test_the_probe_still_leaves_its_heartbeat(caplog):
+    w = watch(Probe(), None)
+    with caplog.at_level(logging.INFO, logger="ricardi.health"):
+        await w.check()
+    assert any("credential ok" in r.getMessage() for r in caplog.records)
+
+
+async def test_with_no_traffic_it_probes_every_interval():
+    hand = Hand()
+    probe = Probe()
+    sleep = Winding(hand, stop_after=3)
+    w = watch(probe, None, every=3600.0, sleep=sleep, clock=hand)
+    with pytest.raises(Stop):
+        await w.run()
+    # Startup, then one per interval: the behaviour of a quiet weekend is
+    # exactly what it was before real turns were counted.
+    assert probe.calls == 3
+
+
+async def test_a_real_turn_within_the_interval_stands_in_for_the_probe():
+    hand = Hand()
+    probe = Probe()
+    sleep = Chatty(hand, stop_after=2)
+    w = watch(probe, None, every=3600.0, sleep=sleep, clock=hand)
+    sleep.watch = w
+    with pytest.raises(Stop):
+        await w.run()
+    # Only the startup probe. The channel's own traffic proved the credential
+    # for every interval after it, at no cost.
+    assert probe.calls == 1
+
+
+async def test_a_stale_success_does_not_hold_the_probe_off():
+    # The window is the interval, not forever: traffic that stopped an hour
+    # ago says nothing about the credential now.
+    hand = Hand()
+    probe = Probe()
+    sleep = Winding(hand, stop_after=2)
+    w = watch(probe, None, every=3600.0, sleep=sleep, clock=hand)
+    await w.saw_success()
+    hand.advance(7200.0)
+    with pytest.raises(Stop):
+        await w.run()
+    assert probe.calls == 2
+
+
+class Flaky(Chatty):
+    """A turn answers, and the next one fails, inside the same interval."""
+
+    async def __call__(self, delay: float) -> None:
+        self.hand.advance(delay / 2)
+        assert self.watch is not None
+        await self.watch.saw_success()
+        await self.watch.saw_failure(ProbeFailed(EXPIRED))
+        self.hand.advance(delay / 2)
+        await Clockwork.__call__(self, delay)
+
+
+async def test_an_unconfirmed_failure_is_always_probed():
+    # A real turn failed after a recent success, so the fresh success would
+    # otherwise hold the probe off -- and the streak would then depend on
+    # whether anyone happened to ask again.
+    hand = Hand()
+    probe = Probe()
+    sleep = Flaky(hand, stop_after=2)
+    w = watch(probe, None, every=3600.0, retry=60.0, streak=3, sleep=sleep, clock=hand)
+    sleep.watch = w
+    with pytest.raises(Stop):
+        await w.run()
+    assert probe.calls == 2
