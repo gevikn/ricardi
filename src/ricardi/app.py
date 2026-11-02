@@ -9,6 +9,7 @@ import logging
 from ricardi import router
 from ricardi.backends.base import AgentBackend, BackendError, Caller
 from ricardi.grants import GrantError, GrantStore
+from ricardi.health import CredentialWatch, classify, describe
 from ricardi.policy import TIERS, ClosedPolicy, PolicyPoint, Request, Resource
 from ricardi.store import ThreadBindings
 from ricardi.transports.base import Inbound, Transport
@@ -25,6 +26,7 @@ class Ricardi:
         ack_after: float = 4.0,
         policy: PolicyPoint | None = None,
         grants: GrantStore | None = None,
+        health: CredentialWatch | None = None,
     ):
         self.transport = transport
         self.backend = backend
@@ -36,11 +38,26 @@ class Ricardi:
         # only to see which tiers a revoke has to clear. What a person may do is
         # the policy's to say, never this store's.
         self.grants = grants
+        # Watches the Claude credential, which fails independently of
+        # Slack. None means nobody is watching it.
+        self.health = health
+        self._watching: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
         await self.transport.start(self.handle)
+        # After the transport, not before: the first check runs straight
+        # away and its alert has nowhere to go until Slack is connected.
+        if self.health is not None:
+            self._watching = asyncio.create_task(self.health.run())
 
     async def close(self) -> None:
+        if self._watching is not None:
+            # Stopped first, so it cannot try to post through a transport
+            # that is already closing.
+            self._watching.cancel()
+            with contextlib.suppress(BaseException):
+                await self._watching
+            self._watching = None
         await self.transport.close()
         await self.backend.close()
 
@@ -50,6 +67,9 @@ class Ricardi:
             await self._handle(inbound)
         except BackendError as exc:
             await self._say(inbound, str(exc))
+            # The person has their error. The channel has not been told what
+            # it means, and only this path knows.
+            await self._turn_failed(exc)
         except Exception:
             log.exception("turn failed for thread %s", inbound.thread)
             await self._say(
@@ -228,6 +248,28 @@ class Ricardi:
         """The roster's email for a Slack id, or "" for a stranger."""
         return self._principal(Inbound(text="", thread="", channel="", user=slack_id)).email
 
+    async def _turn_failed(self, exc: BackendError) -> None:
+        """Let the credential watch count a turn that failed its way.
+
+        Gated on recognising the error, and that gate is load-bearing: an
+        unknown agent and an agent that ran out of turns are `BackendError`
+        too, and counting either would announce a dead credential because
+        somebody mistyped a name. The probe is the opposite -- it alerts on
+        anything it does not recognise, because nothing else was asking -- so
+        the unrecognised case is left to it.
+
+        Classified on the cause rather than on this exception's own text: the
+        backend wraps a failure as "*name* failed: Command failed with exit
+        code 1" and the reason lives in the original error's stderr, which
+        `describe` reads and this message does not carry.
+        """
+        if self.health is None:
+            return
+        cause = exc.__cause__ or exc
+        if classify(describe(cause)) not in {"auth", "billing"}:
+            return
+        await self.health.saw_failure(cause)
+
     async def _permit(
         self,
         inbound: Inbound,
@@ -335,6 +377,10 @@ class Ricardi:
                 with contextlib.suppress(BaseException):
                     await task
         await self._say(inbound, f"*{agent}*\n{answer}".rstrip())
+        if self.health is not None:
+            # An answered turn proves the credential better than any probe,
+            # and tells the channel if it had been told otherwise.
+            await self.health.saw_success()
 
     async def _agent_list(self) -> str:
         agents = await self.backend.list_agents()

@@ -172,3 +172,42 @@ def test_the_shipped_example_sets_a_ceiling_on_every_agent():
     for entry in raw["agent"]:
         assert entry.get("max_budget_usd", 0) > 0, entry["name"]
         assert entry.get("max_turns", 0) > 0, entry["name"]
+
+
+def test_the_credential_watch_is_configurable(tmp_path):
+    work = tmp_path / "repo"
+    work.mkdir()
+    path = write(
+        tmp_path,
+        f"""
+[ricardi]
+alert_channel = "C0123456789"
+health_every = 900
+
+[[agent]]
+name = "scout"
+cwd = {str(work)!r}
+""",
+    )
+    settings = config.load(path)
+    assert settings.alert_channel == "C0123456789"
+    assert settings.health_every == 900.0
+
+
+def test_the_watch_is_on_by_default_but_has_nowhere_to_shout(tmp_path):
+    # Hourly out of the box, because an unnoticed expiry costs a week of
+    # soak. No channel though: posting into one nobody chose would be worse
+    # than the log, which it writes to regardless.
+    work = tmp_path / "repo"
+    work.mkdir()
+    path = write(
+        tmp_path,
+        f"""
+[[agent]]
+name = "scout"
+cwd = {str(work)!r}
+""",
+    )
+    settings = config.load(path)
+    assert settings.health_every == 3600.0
+    assert settings.alert_channel == ""

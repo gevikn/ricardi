@@ -361,3 +361,23 @@ async def test_two_threads_two_agents_at_once_through_the_app(tmp_path):
         assert "right-beta" in b and "left-alpha" not in b, b
     finally:
         await app.close()
+
+
+async def test_the_credential_probe_passes_against_the_real_thing():
+    """The health check, run for real.
+
+    Every other test of the watch hands it a fake probe, so this is the only
+    one that knows whether sdk_probe itself works: whether the one-shot query
+    is wired up correctly, and whether a credential that is fine really comes
+    back as a success rather than something the probe would read as a failure.
+    A false alarm every hour would be worse than no monitor.
+
+    There is no matching negative test. Feeding it a deliberately broken token
+    proves nothing on a developer box, because a stored login takes precedence
+    over the environment -- which is the whole trap documented in
+    docs/running.md, and it would quietly authenticate anyway.
+    """
+    from ricardi.health import sdk_probe
+
+    await sdk_probe(timeout=180.0)()
+
