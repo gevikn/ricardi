@@ -184,3 +184,27 @@ async def test_no_watch_configured_changes_nothing(wired):
     )
     await app.handle(message("tell ricardi hello"))
     assert "OAuth token has expired" in transport.last
+
+
+async def test_a_billing_failure_in_a_real_turn_counts(wired):
+    # Nobody is coming to fix this by waiting, and the channel is where the
+    # person who can top the account up is reading.
+    app, transport, watch, posted, _ = wired(
+        BackendError("*ricardi* failed: Your credit balance is too low")
+    )
+    await app.handle(message("tell ricardi hello"))
+    assert watch.announced
+    assert "top up" in posted.texts[0]
+
+
+async def test_a_rate_limited_turn_is_left_to_the_probe(wired):
+    # A usage limit hit by real traffic is self-inflicted and transient, and
+    # it is the asker who is in the best position to know that. If it is in
+    # fact sustained, no turn succeeds, the window goes stale and the probe
+    # reports it on the ordinary interval.
+    app, transport, watch, posted, _ = wired(
+        BackendError("*ricardi* failed: 429 rate limit exceeded")
+    )
+    await app.handle(message("tell ricardi hello"))
+    assert posted.texts == []
+    assert watch.failures == 0
