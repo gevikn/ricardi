@@ -17,7 +17,7 @@ from __future__ import annotations
 import fnmatch
 import os
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -36,10 +36,54 @@ SHELL_ALIAS = "shell"
 # preventing; a read tool briefly refused is an annoyance.
 READING_TOOLS = frozenset({"Read", "Grep", "Glob", "NotebookRead"})
 
+# Tools that change files directly. What a `read` tier may not call. Only ever
+# a subtraction. `NotebookEdit` is here although the access spec's table names
+# only `Write` and `Edit`: `READING_TOOLS` already holds `NotebookRead`, so
+# leaving its counterpart out would be an oversight, not a decision, and
+# including it can only refuse more. A builder's call, recorded as one.
+# A short list of writers, where READING_TOOLS is an allowlist that treats an
+# unknown tool as writing. Deliberate, for three reasons. A tool outside this
+# set is not waved through: it matches no allow rule that names `tools`, so it
+# is already denied by default, for readers and writers alike. A reader holds
+# the shell anyway, so the access spec has already accepted a larger indirect
+# write hole than an unlisted tool could open. And a fail-closed list here
+# would refuse harmless tools that merely are not readers, and make `read`
+# unusable. The backstop is pinned by a test, so a tools-less allow rule shows.
+# Enforced by tool name, never by reading a command: the shell is not in this
+# set, so a reader can still cause a write through it. That is documented in
+# docs/access-simulation.md rather than engineered around here.
+WRITING_TOOLS = frozenset({"Write", "Edit", "NotebookEdit", "MultiEdit"})
+_WRITING_LOWER = frozenset(t.lower() for t in WRITING_TOOLS)
+
 # Tool inputs name their path under different keys depending on the tool.
 _PATH_KEYS = ("file_path", "path", "notebook_path")
 # Keys worth quoting back to the channel when announcing what is about to run.
 _SUMMARY_KEYS = ("command", "file_path", "path", "pattern", "url")
+
+
+# A person's tier on a name, ascending. Absence is the floor (rank 0). `exec`
+# is a name's scope, not a person tier.
+TIERS: tuple[str, ...] = ("read", "write")
+
+# Verbs that change who may do what, as opposed to doing it. Not designed yet,
+# so nothing allows them and the default denies.
+PLANE2_VERBS = frozenset({"grant", "revoke", "reset", "scope"})
+
+
+def tier_rank(tier: str) -> int:
+    """1 for read, 2 for write, 0 for absence or anything unrecognised."""
+    return TIERS.index(tier) + 1 if tier in TIERS else 0
+
+
+def at_most(tier: str, ceiling: str) -> bool:
+    """Is `tier` no higher than `ceiling`? Absence is a tier; a non-tier is not.
+
+    An unrecognised value on either side is False, not rank 0: "admin" must not
+    pass a ceiling check just because it ranks as the floor.
+    """
+    if any(t and t not in TIERS for t in (tier, ceiling)):
+        return False
+    return tier_rank(tier) <= tier_rank(ceiling)
 
 
 @dataclass(frozen=True)
@@ -82,6 +126,18 @@ class Request:
     # unconstrained by this check, which only happens when no agent is behind
     # the request -- `config.load` gives every agent at least one root.
     agent_roots: tuple[str, ...] = ()
+    # The asker's tier on this name: "", "read" or "write". Filled in by
+    # `decide` from the grant store and NEVER by a caller -- a caller-supplied
+    # tier would be a way to widen oneself, so whatever arrives here from
+    # outside is overwritten. The exception is deliberate: with no store open
+    # (`grants=None`) a caller's tier is left alone, so that such a policy
+    # decides exactly as it did before tiers existed.
+    tier: str = ""
+    # Whom a plane-2 verb (grant, revoke, reset, scope) is aimed at: an email.
+    target: str = ""
+    # What a "grant" would give the target: a tier from `TIERS`. Rules match it
+    # exactly, never by glob.
+    confers: str = ""
 
 
 @dataclass(frozen=True)
@@ -160,6 +216,11 @@ class Rule:
     path_matches: tuple[str, ...] = ()
     command_matches: tuple[str, ...] = ()
     obligations: tuple[str, ...] = ()
+    tiers: tuple[str, ...] = ()
+    targets: tuple[str, ...] = ()
+    # Exact, like `channels`: a glob on a conferral is how `rea*` silently
+    # covers a tier nobody meant.
+    confers: tuple[str, ...] = ()
 
     def matches(self, request: Request) -> bool:
         """Every dimension the rule names must match; unnamed ones match all."""
@@ -172,6 +233,12 @@ class Rule:
         if self.agents and not _any_glob(request.agent, self.agents):
             return False
         if self.tools and not _tool_matches(request.tool, self.tools):
+            return False
+        if self.tiers and not _any_glob(request.tier, self.tiers):
+            return False
+        if self.targets and not _any_glob(request.target, self.targets):
+            return False
+        if self.confers and request.confers not in self.confers:
             return False
 
         if self.path_under:
@@ -199,6 +266,32 @@ class Rule:
                 return False
 
         return True
+
+
+def _tier_refusal(request: Request) -> Decision | None:
+    """Apply the asker's tier. Returns a refusal, or None to carry on.
+
+    Never returns an allow, for the same reason as `_flag_refusal`: having no
+    allowing branch at all is the contract, not an oversight. Holding `write` adds
+    nothing here; it merely stops this refusing and leaves the rules to decide.
+    An empty tier is "unconstrained by tier", not "none" -- enforcing none waits
+    for the build step where someone with presence and no tier exists.
+    """
+    if request.action != "tool" or request.tier.lower() != "read":
+        return None
+    # Case-insensitive, like `_glob`: the rules match tool names that way, and a
+    # check that disagrees with them is how `GIT PUSH` once evaded a deny.
+    if request.tool.lower() not in _WRITING_LOWER:
+        return None
+    return Decision(
+        allow=False,
+        reason=(
+            f"You hold read on {request.agent or 'this name'}, which does not "
+            f"include {request.tool}. Refused: "
+            f"{summarise(request.tool, request.tool_input)}. Ask an owner for write."
+        ),
+        rule="tier",
+    )
 
 
 def _flag_refusal(request: Request) -> Decision | None:
@@ -231,6 +324,101 @@ def _flag_refusal(request: Request) -> Decision | None:
             ),
             rule="-dry, from the request",
         )
+    return None
+
+
+def _conferral_refusal(policy: RulesPolicy, request: Request) -> Decision | None:
+    """Who may confer what. Returns a refusal, or None to carry on.
+
+    Never returns an allow, for the same reason as `_flag_refusal`: carrying on
+    only hands the request to the rules, whose ceiling still decides. Passing
+    here is "not refused by this check" and nothing more.
+
+    The authority: an owner of that name may confer any tier the rules permit; a
+    delegate holding the `grant` verb may confer at or below their own tier;
+    nobody else may confer at all. Each refusal is its own `rule`, in this order,
+    so the audit log can say which test failed.
+    """
+    if request.action not in PLANE2_VERBS:
+        return None
+    # Function-local: grants reaches this module the same way, so a top-level
+    # import would close the cycle. Normalisation stays single-sourced there.
+    from ricardi.grants import normalise, normalise_name
+
+    # `owns`, `holds` and `tier` each normalise their own arguments as well, so
+    # this is for the roster set and the empty-target guard, not what makes the
+    # authority check safe; do not "simplify" the wrong one.
+    name = normalise_name(request.agent)
+    target = normalise(request.target)
+    who = normalise(request.principal.email)
+
+    def refuse(rule: str, reason: str) -> Decision:
+        return Decision(allow=False, reason=reason, rule=rule)
+
+    owner = policy.owns(who, name)
+    delegate = (
+        not owner
+        and policy.grants is not None
+        and policy.grants.holds(who, name, "grant")
+    )
+    if not owner and not delegate:
+        return refuse(
+            "not a grantor",
+            f"Only an owner of {request.agent or 'this name'}, or someone it has "
+            "delegated granting to, can do that.",
+        )
+
+    # After authority, not before: a refusal that depends on whether the target
+    # is rostered would tell anyone at all which Slack ids are on the roster.
+    # The roster is the only list of people; a conferral on anyone off it would
+    # be a row no decision could ever use. Normalised on both sides.
+    # Required for grant and revoke; reset and scope may not name a person, so
+    # their target is checked only when one is supplied.
+    needs_person = request.action in ("grant", "revoke") or bool(target)
+    if needs_person and (
+        not target or target not in {normalise(e) for e in policy.roster.values()}
+    ):
+        return refuse(
+            "target not on the roster",
+            "That person isn't on the roster, so they can't be given access.",
+        )
+
+    if request.action == "grant":
+        # A conferral must be a real tier for everyone, owners included: at_most
+        # (not tier_rank) so "admin" is not the floor, and the empty string is
+        # not a tier to confer.
+        # Its own rule, ahead of the tier comparison: a typo or a non-tier is a
+        # malformed command, not an escalation, and the audit must say which.
+        confers = request.confers
+        if confers not in TIERS:
+            return refuse(
+                "not a tier",
+                f"{confers!r} isn't a tier. Use one of: {', '.join(TIERS)}.",
+            )
+        # A delegate is bounded by their own tier (filled in by `decide` from
+        # the store); an owner is bounded only by the rules' ceiling.
+        if delegate and not request.tier:
+            return refuse(
+                "no tier of your own",
+                f"You hold no tier on {request.agent}, so you can't give {confers}.",
+            )
+        if delegate and not at_most(confers, request.tier):
+            return refuse(
+                "above the grantor",
+                f"You hold {request.tier} on {request.agent}, so you "
+                f"can't give {confers}.",
+            )
+    elif request.action == "revoke" and delegate:
+        # Silence in the design on revocation reads as "the same bound", not "no
+        # bound": authority runs downhill, so a delegate may take back only what
+        # they could have given. An owner (not a delegate) stays unbounded.
+        held = policy.grants.tier(target, name)
+        if held and not at_most(held, request.tier):
+            return refuse(
+                "their tier is above yours",
+                f"They hold {held} on {request.agent}, which is above what you "
+                "hold, so you can't take it back.",
+            )
     return None
 
 
@@ -275,6 +463,7 @@ class RulesPolicy:
         rules: list[Rule] | tuple[Rule, ...] = (),
         roster: dict[str, str] | None = None,
         grants: GrantStore | None = None,
+        owners: dict[str, tuple[str, ...]] | None = None,
     ):
         self.rules = tuple(rules)
         # None means no grant check at all, which is how every deployment that
@@ -283,17 +472,68 @@ class RulesPolicy:
         # Slack user id -> email. The roster is the whole identity story: no
         # directory lookups, so no extra Slack scopes and nothing to cache.
         self.roster = dict(roster or {})
+        # Agent name -> owner emails, both already normalised by `load`. Read
+        # from policy.toml only: nothing a running process does adds to it, so
+        # ownership can never be bootstrapped from the database.
+        self.owners = {n: tuple(e) for n, e in (owners or {}).items()}
+
+    def owns(self, email: str, agent: str) -> bool:
+        """Whether this person is a named owner of this agent name. Decides nothing."""
+        from ricardi.grants import normalise, normalise_name
+
+        who = normalise(email)
+        return bool(who) and who in self.owners.get(normalise_name(agent), ())
 
     def principal(self, slack_user_id: str) -> Principal:
         email = self.roster.get(slack_user_id, "")
         return Principal(id=slack_user_id, email=email, known=bool(email))
 
     async def decide(self, request: Request) -> Decision:
+        # Before everything, so every branch and every rule sees it. Overwritten,
+        # never filled-if-empty: a tier a caller brings with it is a way to
+        # claim write from application code and skip the model, so whatever
+        # arrives is discarded and replaced by what the store says now. Read per
+        # decision (no cache), and a failing store raises: folded into "" it
+        # would audit a broken store as nobody holding anything. Fills a field;
+        # there is no `allow=True` here to reach. A policy with no store is left
+        # alone: it is the mode every deployment that has not opted in still runs,
+        # and it must decide exactly as before.
+        if self.grants is not None:
+            tier = (
+                self.grants.tier(request.principal.email, request.agent)
+                if request.principal.known
+                else ""
+            )
+            request = replace(request, tier=tier)
+
+        # Canonicalise the keys every later step compares, once, here. The
+        # conferral check and the grant store already normalise their own
+        # arguments, but `Rule.matches` goes through `_glob`, which lowercases
+        # and strips nothing: left raw, " bob@x.com " slipped past a deny naming
+        # bob@x.com while owns/holds still authorised on the stripped key, so
+        # one decision read two keys. Direction: for a deny this only adds
+        # matches, which subtracts access; for an allow naming `targets` or
+        # `agents` it newly matches a padded value that used to fall to the
+        # default deny, which is intended, and deny-overrides still orders the
+        # two. Function-local import, as in `owns`: grants imports this module.
+        from ricardi.grants import normalise, normalise_name
+
+        request = replace(
+            request,
+            target=normalise(request.target),
+            agent=normalise_name(request.agent),
+        )
+
         # Before the rules, and only ever to refuse. Putting it first is what
         # makes the invariant structural: this branch has no `allow=True` to
         # reach, so no flag can widen what the rules would have decided, and
         # no rule that forgot something can be used to get around a flag.
         refused = _flag_refusal(request)
+        if refused is not None:
+            return refused
+
+        # Beside the flags, for the same reason: refuse-only, before the rules.
+        refused = _tier_refusal(request)
         if refused is not None:
             return refused
 
@@ -335,6 +575,13 @@ class RulesPolicy:
                     reason=self._default_reason(request),
                     rule="no grant",
                 )
+
+        # After the roster refusal, before the allows: the same placement as the
+        # grant check, and refuse-only like it, so who-may-confer can only add a
+        # requirement and the rules' ceiling still decides what remains.
+        refused = _conferral_refusal(self, request)
+        if refused is not None:
+            return refused
 
         # A name reaches its own roots and no further, whatever a rule's
         # `path_under` says. `path_under` is written per rule, so it is one root
@@ -382,6 +629,11 @@ class RulesPolicy:
         return "That isn't permitted here."
 
     def _default_reason(self, request: Request) -> str:
+        if request.action in ("grant", "revoke"):
+            return (
+                f"No rule allows {request.action} here. Ask whoever runs this "
+                f"deployment to add a rule with actions = [\"{request.action}\"]."
+            )
         if request.action == "tool":
             what = summarise(request.tool, request.tool_input)
             return (
@@ -403,12 +655,19 @@ class ClosedPolicy:
     def __init__(self, why: str):
         self.why = why
         self.roster: dict[str, str] = {}
+        self.owners: dict[str, tuple[str, ...]] = {}
+
+    def owns(self, email: str, agent: str) -> bool:
+        return False
 
     def principal(self, slack_user_id: str) -> Principal:
         return Principal(id=slack_user_id)
 
     async def decide(self, request: Request) -> Decision:
-        return Decision(allow=False, reason=f"Policy isn't loaded, so nothing is allowed: {self.why}")
+        return Decision(
+            allow=False,
+            reason=f"Policy isn't loaded, so nothing is allowed: {self.why}",
+        )
 
 
 def load_limits(path: str | os.PathLike[str]) -> tuple[int, int]:
@@ -445,6 +704,22 @@ def load(path: str | os.PathLike[str]) -> RulesPolicy:
             raise PolicyError(f"{p}: {slack} is listed twice.")
         roster[slack] = email
 
+    # Imported here, not at module scope: grants takes `_any_glob` from this
+    # module through its own function-local import, so a top-level import
+    # here would close the cycle. Normalisation stays single-sourced in grants
+    # so a name written here is keyed exactly as the grant rows are.
+    from ricardi.grants import normalise, normalise_name
+
+    owners: dict[str, tuple[str, ...]] = {}
+    for entry in raw.get("owner") or []:
+        agent = normalise_name(str(entry.get("agent", "")))
+        email = normalise(str(entry.get("email", "")))
+        if not agent or not email:
+            raise PolicyError(f"{p}: every [[owner]] needs both agent and email.")
+        if email in owners.get(agent, ()):
+            raise PolicyError(f"{p}: {email} is listed twice as an owner of {agent}.")
+        owners[agent] = (*owners.get(agent, ()), email)
+
     rules: list[Rule] = []
     for entry in raw.get("rule") or []:
         effect = str(entry.get("effect", "")).strip().lower()
@@ -466,12 +741,15 @@ def load(path: str | os.PathLike[str]) -> RulesPolicy:
                 path_matches=_tuple(entry.get("path_matches")),
                 command_matches=_tuple(entry.get("command_matches")),
                 obligations=_tuple(entry.get("obligations")),
+                tiers=_tuple(entry.get("tiers")),
+                targets=_tuple(entry.get("targets")),
+                confers=_tuple(entry.get("confers")),
             )
         )
 
     if not rules:
         raise PolicyError(f"{p} has no rules, so nothing would be allowed.")
-    return RulesPolicy(rules=rules, roster=roster)
+    return RulesPolicy(rules=rules, roster=roster, owners=owners)
 
 
 def _tuple(value: Any) -> tuple[str, ...]:

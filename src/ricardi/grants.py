@@ -165,6 +165,20 @@ class GrantStore:
         )
         return bool(row and row[0][0])
 
+    def tier(self, person: str, name: str) -> str:
+        """The highest tier this person currently holds on this name, or "".
+
+        Reports, never judges. Built on `holds`, so "in force" is decided in one
+        place: the latest row per triple wins, and a superseded write leaves the
+        read row beneath it standing. Reads the log on every call; no cache.
+        """
+        from ricardi.policy import TIERS
+
+        for verb in reversed(TIERS):
+            if self.holds(person, name, verb):
+                return verb
+        return ""
+
     def current(self) -> tuple[Grant, ...]:
         """Grants in force: the latest row per triple, if that row is a grant."""
         rows = self._query(
@@ -218,12 +232,33 @@ def seed_from_policy(store: GrantStore, policy: RulesPolicy, *,
     to everyone, so no row is ever a pattern. A rule scoped to `users` seeds
     only the roster members it names.
 
-    Idempotent, and a triple with any history is left alone: a second run
-    writes nothing, and cannot undo an admin's revoke. Returns rows written.
+    Also writes the tier those rules imply for each pair it reaches: `write`
+    when an allow rule for that person and name permits a writing tool or names
+    no tools, else `read`. Still only subtracts, since it states what is already
+    permitted. Idempotent, and a triple with any history is left alone: a
+    second run writes nothing, and cannot undo an admin's revoke. Returns rows
+    written, ask and tier rows together.
     """
     # Imported here: policy has no reason to depend on grants, and grants only
     # needs policy's matching when it seeds.
-    from ricardi.policy import _any_glob
+    from ricardi.policy import WRITING_TOOLS, _any_glob, _tool_matches
+
+    def implied_tier(email: str, name: str) -> str:
+        # "write" if any allow rule reaching this person and name lets a tool
+        # run that could write, or names no tools (so allows all of them);
+        # otherwise "read". Deny rules and path conditions are ignored: the
+        # tier states the tool-level reach the rules already grant, and the
+        # rules still decide on top of it.
+        for rule in policy.rules:
+            if rule.effect != "allow" or (rule.actions and "tool" not in rule.actions):
+                continue
+            if rule.agents and not _any_glob(name, rule.agents):
+                continue
+            if rule.users and not _any_glob(email, rule.users):
+                continue
+            if not rule.tools or any(_tool_matches(t, rule.tools) for t in WRITING_TOOLS):
+                return "write"
+        return "read"
 
     seen = {(g.person, g.name, g.verb) for g in store.history()}
     emails = list(dict.fromkeys(normalise(e) for e in policy.roster.values() if e.strip()))
@@ -253,10 +288,23 @@ def seed_from_policy(store: GrantStore, policy: RulesPolicy, *,
                 continue
             for name in allowed:
                 key = (email, normalise_name(name), "ask")
-                if key in seen:
+                if key not in seen:
+                    store.add(person=email, name=name, verb="ask", by=by)
+                    seen.add(key)
+                    written += 1
+                # The tier their rules imply, so landing tiers is not a hole.
+                # Only for someone who can still ask (an admin's revoke of ask
+                # stands), and only when neither tier verb has any history, so
+                # a revoked tier is never resurrected. Seeds one tier, never
+                # both: holding write already implies the reach of read.
+                if not store.holds(email, name, "ask"):
                     continue
-                store.add(person=email, name=name, verb="ask", by=by)
-                seen.add(key)
+                tier_keys = [(email, normalise_name(name), t) for t in ("read", "write")]
+                if any(k in seen for k in tier_keys):
+                    continue
+                tier = implied_tier(email, name)
+                store.add(person=email, name=name, verb=tier, by=by)
+                seen.add((email, normalise_name(name), tier))
                 written += 1
     return written
 

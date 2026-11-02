@@ -77,3 +77,17 @@ def test_the_message_is_kept_as_typed():
     assert router.parse("tell me what version we are").raw == "tell me what version we are"
     assert router.parse("-ro tell me the thing").raw == "tell me the thing"
     assert router.parse("scout: look").raw == "scout: look"
+
+
+@pytest.mark.parametrize(
+    "text,kind",
+    [
+        ("grant <@U2> reed on n1", "grant"),          # a mention: still a conferral
+        ("grant bob read on n1", "bad_grant"),        # plain name: the shape
+        ("revoke bob on n1", "bad_revoke"),
+        ("grant me a second, I'm still looking", "say"),
+        ("revoke the stale token in config.py", "say"),
+    ],
+)
+def test_prose_starting_with_grant_or_revoke_is_not_swallowed(text, kind):
+    assert router.parse(text).kind == kind

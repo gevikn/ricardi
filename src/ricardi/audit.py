@@ -58,6 +58,16 @@ class AuditLog:
             "channel": request.resource.channel_id,
             "agent": request.agent,
         }
+        # Who a plane-2 verb was aimed at and what it would have conferred, so
+        # that "grant read" and "grant write" are not the same line, and a refusal
+        # for an outsider still names the outsider. `tier` is what the asker held,
+        # which is the whole story of a rule="tier" refusal.
+        if request.target:
+            entry["target"] = request.target
+        if request.confers:
+            entry["confers"] = request.confers
+        if request.tier:
+            entry["tier"] = request.tier
         if request.tool:
             entry["tool"] = request.tool
             entry["what"] = summarise(request.tool, request.tool_input)[:MAX_SUMMARY]
@@ -135,6 +145,9 @@ class AuditedPolicy:
             # enforcement points turn this into a denial.
             self._log.record(request, Decision(allow=False, rule="policy error"), str(exc))
             raise
+        # The *original* request, deliberately: the logged `agent` is the caller's
+        # raw spelling while the decision used the normalised one. The log shows
+        # what was typed, so a misspelt or mis-cased name is visible as such.
         self._log.record(request, decision)
         return decision
 

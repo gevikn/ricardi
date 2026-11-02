@@ -65,9 +65,9 @@ and the right one sits there unused.
 
 | Credential | Comes from | Expires | Survives you using Claude Code elsewhere |
 |---|---|---|---|
-| `ANTHROPIC_API_KEY` | the Anthropic Console | when you rotate it | **yes** -- no session to revoke |
-| `CLAUDE_CODE_OAUTH_TOKEN` | `claude setup-token` | undocumented, and silently | mostly |
-| a stored login | `claude`, or `/login` | whenever a refresh fails | **no** -- this is the one that prompts you |
+| `ANTHROPIC_API_KEY` | the Anthropic Console | when you rotate it | **yes** -- no session |
+| `CLAUDE_CODE_OAUTH_TOKEN` | `claude setup-token` | undocumented, silently | mostly |
+| a stored login | `claude`, or `/login` | when a refresh fails | **no** -- it prompts you |
 
 **An always-on host uses one of the first two and never the third.**
 
@@ -297,6 +297,52 @@ the same bare-`PATH` problem as launchd, and it has to be set on the service.
 removes the reason we first called it impossible. It needs the CLI on the
 service `PATH` and `icacls` grants on the config directory and the workspace,
 and it has not been tried yet.
+
+## Letting someone in: `grant` and `revoke`
+
+An owner (an `[[owner]]` entry in `policy.toml`), or someone an owner has
+delegated granting to, can give a person a tier on an agent from Slack:
+
+```
+@ricardi grant @bob read on ricardi
+@ricardi grant @bob write on ricardi
+@ricardi revoke @bob on ricardi
+```
+
+Pick the person from Slack's mention list so Ricardi receives their id; plain
+text such as `bob` is not read as a person. They must be on the `[[identity]]`
+roster, or the answer says so and nothing is written. The tier is `read` or
+`write`, in any case. A delegate can give at most the tier they hold
+themselves, and can take back only a tier at or below their own.
+
+**Two things must both be in `policy.toml`.** The `[[owner]]` entry names *who*
+may confer. A `[[rule]]` with `actions = ["grant", "revoke"]` (the shipped
+examples have one) is what lets the action through at all. Without that rule
+the answer is a refusal that says no rule allows granting; the owner entry
+alone does nothing.
+
+An owner is bounded by what the rules allow and by any `confers` list on that
+grant rule, not by their own tier row: an owner with no tier row at all can
+still confer. `revoke` clears every tier the person holds on that agent and
+leaves their presence alone. It does **not** clear the `grant` verb, so a
+demoted delegate keeps a dormant delegation that re-arms the moment anyone
+grants them a tier again. There is no Slack path to remove delegation; it is
+CLI-only (`grants revoke --verb grant`).
+
+**A `grant` records a tier. It does not add anyone to the Slack channel.**
+Adding people to the channel is still done by hand in Slack, before the grant:
+presence and capability are separate on purpose. Ricardi's Slack app does not
+yet have the scope to invite people itself, so a grant that seems to do nothing
+usually means the person was never added. **Someone who is in the channel
+without a grant has presence and nothing more.**
+
+Every grant and revoke that reaches a decision is a line in the audit log,
+allowed or refused, naming the target and what was conferred, and a refused one
+writes nothing. A message that does not parse is answered with the shape and is
+not audited. Rows are never edited or deleted: a revoke is a newer row that
+supersedes the grant, and `ricardi grants list` shows what is in force. An
+owner whose email is missing from the roster cannot act as one; Ricardi
+logs a warning naming them at startup rather than refusing to start.
 
 ## Check it is actually working
 

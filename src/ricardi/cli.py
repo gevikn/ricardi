@@ -44,6 +44,31 @@ def _load_env(path: Path) -> None:
         os.environ.setdefault(key.strip(), value)
 
 
+def unrostered_owners(policy: policy_mod.RulesPolicy) -> list[tuple[str, str]]:
+    """(name, email) for every [[owner]] whose email is not on the roster."""
+    on_roster = {normalise(e) for e in policy.roster.values()}
+    return [
+        (name, email)
+        for name, emails in policy.owners.items()
+        for email in emails
+        if normalise(email) not in on_roster
+    ]
+
+
+def warn_unrostered_owners(policy: policy_mod.RulesPolicy) -> None:
+    """Say so at startup, rather than refuse to start.
+
+    An owner who is not on the roster can never act: `decide` refuses an unknown
+    principal before any conferral check. That is a typo worth a line in the log,
+    but not worth a load-time error, which would turn it into a total outage.
+    """
+    for name, email in unrostered_owners(policy):
+        logging.getLogger("ricardi").warning(
+            "owner %s of %s is not in the [[identity]] roster, so they cannot act "
+            "as an owner until they are added.", email, name,
+        )
+
+
 async def _serve(args: argparse.Namespace) -> int:
     settings = config.load(args.agents)
     # Nothing is ready yet, and the state directory outlives the container --
@@ -53,6 +78,7 @@ async def _serve(args: argparse.Namespace) -> int:
     # Loaded before anything connects: a broken policy should stop startup, not
     # surface as a refusal to the first person who asks.
     policy = policy_mod.load(args.policy)
+    warn_unrostered_owners(policy)
     per_minute, per_hour = policy_mod.load_limits(args.policy)
     # Unlike threads.json and sessions.json, which shrug off corruption because
     # they must not stop Ricardi answering, a corrupt grant store stops startup:
@@ -121,6 +147,7 @@ async def _serve(args: argparse.Namespace) -> int:
         bindings=ThreadBindings(state),
         ack_after=settings.ack_after,
         policy=policy,
+        grants=grants,
     )
 
     await ricardi.start()

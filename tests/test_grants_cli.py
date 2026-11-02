@@ -71,7 +71,7 @@ def test_grants_seed_reports_how_many_rows_it_wrote(tmp_path, capsys):
     rc = main(["--agents", str(agents), "--policy", str(policy),
                "grants", "seed", "--by", "admin@b.com"])
     assert rc == 0
-    assert "2" in capsys.readouterr().out
+    assert "4" in capsys.readouterr().out
     assert _store(tmp_path).holds("a@b.com", "shared", "ask") is True
 
 

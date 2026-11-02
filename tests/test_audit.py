@@ -230,3 +230,31 @@ async def test_rotation_off_lets_it_grow(tmp_path):
     await policy.decide(tool_request(command="ls"))
     assert not (tmp_path / "audit.jsonl.1").exists()
     assert path.stat().st_size > 5000
+
+
+async def test_a_refused_grant_records_who_it_was_for_and_what_was_conferred(tmp_path):
+    path = tmp_path / "audit.jsonl"
+    policy = AuditedPolicy(
+        RulesPolicy([Rule(effect="allow", actions=("grant",))], roster={"U1": "you@example.com"}),
+        AuditLog(path),
+    )
+    me = Principal(id="U1", email="you@example.com", known=True)
+    for target, confers in (("outsider@example.com", "read"), ("outsider@example.com", "write")):
+        await policy.decide(Request(
+            action="grant", principal=me, agent="n1", target=target, confers=confers))
+
+    a, b = lines(path)
+    assert a["target"] == "outsider@example.com" and a["confers"] == "read"
+    assert b["confers"] == "write"
+    assert a != b
+
+
+async def test_a_tier_refusal_records_the_tier(tmp_path):
+    path = tmp_path / "audit.jsonl"
+    policy = AuditedPolicy(RulesPolicy([Rule(effect="allow")]), AuditLog(path))
+    await policy.decide(Request(
+        action="tool", principal=Principal(id="U1", email="you@example.com", known=True),
+        agent="n1", tool="Write", tier="read", tool_input={"file_path": "/x"}))
+    (entry,) = lines(path)
+    assert entry["rule"] == "tier" and entry["tier"] == "read"
+    assert "target" not in entry and "confers" not in entry
