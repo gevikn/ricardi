@@ -227,3 +227,67 @@ def test_the_tier_refusal_cannot_allow_anything():
     assert _tier_refusal(_tool("Write", "write")) is None
     assert _tier_refusal(_tool("Read", "read")) is None
     assert _tier_refusal(Request(action="ask", principal=KNOWN, tier="read", tool="Write")) is None
+
+
+# -- a tiers rule is inert without a store, and that failed open ----------
+
+# The policy the issue measured: tools allowed broadly, writing denied to
+# anyone holding `read`. Without a store `request.tier` is always "", and
+# `_any_glob` returns False for an empty value -- even against `*` -- so the
+# deny could never match and the write went through the allow, audited as the
+# allow. A dead allow merely refuses; a dead deny fails open.
+TIERED = (
+    '[[rule]]\n'
+    'name="tools for the team"\n'
+    'effect="allow"\n'
+    'actions=["tool"]\n'
+    'users=["*@example.com"]\n'
+    '\n'
+    '[[rule]]\n'
+    'name="readers may not write"\n'
+    'effect="deny"\n'
+    'actions=["tool"]\n'
+    'tools=["Write","Edit"]\n'
+    'tiers=["read"]\n'
+)
+
+
+async def test_a_tiers_rule_without_a_store_refuses_rather_than_widening(written_toml):
+    policy = load(written_toml(TIERED))
+    assert policy.grants is None
+    d = await policy.decide(_tool("Write", ""))
+    assert d.allow is False
+
+
+async def test_the_refusal_says_which_rule_needs_the_store(written_toml):
+    policy = load(written_toml(TIERED))
+    d = await policy.decide(_tool("Write", ""))
+    assert "readers may not write" in d.reason
+    assert d.rule == "tiers-without-a-store"
+
+
+async def test_a_policy_with_no_tiers_rule_still_decides_storelessly(written_toml):
+    # The mode every deployment that has not opted in runs. It must decide
+    # exactly as before, which is what makes the guard safe to add.
+    policy = load(written_toml(ALLOW_ALL))
+    assert policy.grants is None
+    assert (await policy.decide(_tool("Write", ""))).allow is True
+
+
+async def test_the_same_policy_decides_normally_once_a_store_is_open(
+    written_toml, tmp_path
+):
+    from ricardi.grants import GrantStore
+
+    policy = load(written_toml(TIERED))
+    store = GrantStore.open(tmp_path / "grants.db")
+    try:
+        policy.grants = store
+        # Nobody holds `read`, so the deny does not apply and the allow stands.
+        assert (await policy.decide(_tool("Write", ""))).allow is True
+        store.add(person=KNOWN.email, name="n1", verb="read", by="t")
+        refused = await policy.decide(_tool("Write", ""))
+        assert refused.allow is False
+        assert refused.rule != "tiers-without-a-store"
+    finally:
+        store.close()

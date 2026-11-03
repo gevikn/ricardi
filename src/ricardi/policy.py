@@ -478,6 +478,12 @@ class RulesPolicy:
         # from policy.toml only: nothing a running process does adds to it, so
         # ownership can never be bootstrapped from the database.
         self.owners = {n: tuple(e) for n, e in (owners or {}).items()}
+        # Rules written in terms of a tier need the store that supplies one.
+        # Named here so `decide` can refuse rather than quietly decide without
+        # them; see `_storeless_tier_refusal` for why that direction.
+        self._tier_rules = tuple(
+            rule.name or "(unnamed)" for rule in self.rules if rule.tiers
+        )
 
     def owns(self, email: str, agent: str) -> bool:
         """Whether this person is a named owner of this agent name. Decides nothing."""
@@ -491,6 +497,12 @@ class RulesPolicy:
         return Principal(id=slack_user_id, email=email, known=bool(email))
 
     async def decide(self, request: Request) -> Decision:
+        # Before the tier is filled, because this is about there being nothing
+        # to fill it from.
+        storeless = self._storeless_tier_refusal()
+        if storeless is not None:
+            return storeless
+
         # Before everything, so every branch and every rule sees it. Overwritten,
         # never filled-if-empty: a tier a caller brings with it is a way to
         # claim write from application code and skip the model, so whatever
@@ -624,6 +636,41 @@ class RulesPolicy:
         return Decision(allow=False, reason=self._default_reason(request), rule="")
 
     # -- what the human or the model is told ------------------------------
+    def _storeless_tier_refusal(self) -> Decision | None:
+        """Refuse everything when a rule names a tier and no store supplies one.
+
+        `decide` fills `request.tier` from the grant store and only when there
+        is one, so without a store the tier is always "" -- and `_any_glob`
+        returns False for an empty value, even against `*`. Every rule naming
+        `tiers` is therefore unmatchable on a storeless deployment.
+
+        For an `allow` that is harmless: a dead allow refuses. For a `deny` it
+        fails **open** -- the request falls through to whatever broad allow
+        stands behind it, and the audit line names that allow, so nothing in
+        the log says a deny was skipped. That asymmetry is why this refuses
+        rather than warns: a rule that cannot fire is a rule somebody meant,
+        and the subtract-only invariant is worth more than availability on a
+        deployment that is already misconfigured.
+
+        Refusing *everything*, rather than only what the tier rule would have
+        governed, because which requests those are is precisely what cannot be
+        known without the store.
+        """
+        if self.grants is not None or not self._tier_rules:
+            return None
+        named = ", ".join(repr(name) for name in self._tier_rules)
+        return Decision(
+            allow=False,
+            reason=(
+                f"Nothing is permitted: the rule {named} is written in terms of "
+                "a tier, and no grant store is open to say who holds one. The "
+                "rule could never match, and a deny that cannot match lets "
+                "things through. Configure the grant store, or take the tier "
+                "out of the rule."
+            ),
+            rule="tiers-without-a-store",
+        )
+
     def _deny_reason(self, request: Request, rule: Rule) -> str:
         if request.action == "tool":
             what = summarise(request.tool, request.tool_input)
