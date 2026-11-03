@@ -69,6 +69,39 @@ def warn_unrostered_owners(policy: policy_mod.RulesPolicy) -> None:
         )
 
 
+def unbounded_tool_allows(policy: policy_mod.RulesPolicy) -> list[str]:
+    """Names of allow rules that let any tool run, because they name none.
+
+    `Rule.matches` treats a dimension the rule does not name as matching
+    everything, so an allow with no `tools` is an allow for every tool there
+    is. Naming no `actions` is broader still: every action, tool calls among
+    them.
+    """
+    return [
+        rule.name or "(unnamed)"
+        for rule in policy.rules
+        if rule.effect == "allow"
+        and not rule.tools
+        and (not rule.actions or "tool" in rule.actions)
+    ]
+
+
+def warn_unbounded_tool_allows(policy: policy_mod.RulesPolicy) -> None:
+    """Say so at startup, rather than refuse to start.
+
+    "Every tool, for these people, under this root" is a legitimate thing to
+    mean, and the shipped example is careful never to need it -- so this is a
+    warning, not an error. What it buys is that the breadth has to be meant:
+    the loader now rejects the typo that produces it by accident, and this
+    catches the one somebody wrote on purpose and forgot.
+    """
+    for name in unbounded_tool_allows(policy):
+        logging.getLogger("ricardi").warning(
+            "rule %r allows every tool there is, because it names none. "
+            "Add tools = [...] if that is not what was meant.", name,
+        )
+
+
 async def _serve(args: argparse.Namespace) -> int:
     settings = config.load(args.agents)
     # Nothing is ready yet, and the state directory outlives the container --
@@ -79,6 +112,7 @@ async def _serve(args: argparse.Namespace) -> int:
     # surface as a refusal to the first person who asks.
     policy = policy_mod.load(args.policy)
     warn_unrostered_owners(policy)
+    warn_unbounded_tool_allows(policy)
     per_minute, per_hour = policy_mod.load_limits(args.policy)
     # Unlike threads.json and sessions.json, which shrug off corruption because
     # they must not stop Ricardi answering, a corrupt grant store stops startup:

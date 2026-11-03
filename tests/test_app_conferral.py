@@ -13,6 +13,7 @@ import logging
 import pytest
 
 from ricardi import cli, readiness
+from ricardi import policy as P
 from ricardi.app import Ricardi
 from ricardi.audit import AuditedPolicy, AuditLog
 from ricardi.backends.base import Agent
@@ -313,3 +314,56 @@ email = "typo@example.com"
             await task
     assert "typo@example.com" in caplog.text
     assert isinstance(seen["grants"], GrantStore)
+
+
+# -- an allow that names no tool allows every tool ------------------------
+
+
+def test_an_allow_naming_no_tools_is_reported():
+    # Legitimate to write -- "every tool, for these people, under this root"
+    # is a real thing to mean -- so this warns rather than refuses. The point
+    # is that it has to be meant.
+    rules = [P.Rule(effect="allow", name="tools for the team", actions=("tool",))]
+    policy = RulesPolicy(rules=rules, roster=ROSTER)
+    assert cli.unbounded_tool_allows(policy) == ["tools for the team"]
+
+
+def test_an_allow_naming_no_actions_either_is_reported_too():
+    # Broader still: no actions means every action, tool calls included.
+    rules = [P.Rule(effect="allow", name="everything")]
+    policy = RulesPolicy(rules=rules, roster=ROSTER)
+    assert cli.unbounded_tool_allows(policy) == ["everything"]
+
+
+def test_an_allow_that_names_its_tools_is_not_reported():
+    rules = [P.Rule(effect="allow", name="reads", actions=("tool",), tools=("Read",))]
+    policy = RulesPolicy(rules=rules, roster=ROSTER)
+    assert cli.unbounded_tool_allows(policy) == []
+
+
+def test_a_deny_naming_no_tools_is_not_reported():
+    # A deny that names no tool covers every tool, which is the safe direction
+    # and exactly how the shipped example writes its denies.
+    rules = [P.Rule(effect="deny", name="never", actions=("tool",))]
+    policy = RulesPolicy(rules=rules, roster=ROSTER)
+    assert cli.unbounded_tool_allows(policy) == []
+
+
+def test_a_non_tool_allow_is_not_reported():
+    rules = [P.Rule(effect="allow", name="who may ask", actions=("ask", "list"))]
+    policy = RulesPolicy(rules=rules, roster=ROSTER)
+    assert cli.unbounded_tool_allows(policy) == []
+
+
+def test_the_shipped_example_does_not_warn():
+    # If this starts failing, either the example got looser or the check got
+    # noisier. A warning everybody sees at every start is a warning nobody reads.
+    assert cli.unbounded_tool_allows(P.load("policy.example.toml")) == []
+
+
+def test_the_warning_names_the_rule(caplog):
+    rules = [P.Rule(effect="allow", name="tools for the team", actions=("tool",))]
+    policy = RulesPolicy(rules=rules, roster=ROSTER)
+    with caplog.at_level(logging.WARNING, logger="ricardi"):
+        cli.warn_unbounded_tool_allows(policy)
+    assert "tools for the team" in caplog.text
