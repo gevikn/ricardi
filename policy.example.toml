@@ -8,6 +8,16 @@
 # channel and agent. That is the thing to be careful about here: a rule that
 # forgets to say who it is for grants more than it looks like it grants.
 #
+# Which is why a key this file does not know is refused at load rather than
+# ignored. `tols = ["Read"]` is one letter from a rule about two tools and,
+# by the paragraph above, a rule about all of them. Table names are checked
+# the same way, and so is agents.toml.
+#
+# A rule naming `tiers` needs the grant store, which supplies the tier. With
+# no store open, Ricardi refuses everything and says which rule: storeless,
+# such a rule could never match, and a deny that cannot match lets things
+# through.
+#
 # Agents are repositories (see agents.example.toml), so `agents` in a rule
 # means "in this checkout". Rules that grant change are written per repo for
 # that reason -- "who may alter what, and where" reads off the file directly.
