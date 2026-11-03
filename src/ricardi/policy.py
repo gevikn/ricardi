@@ -14,13 +14,14 @@ into a denial.
 
 from __future__ import annotations
 
-import difflib
 import fnmatch
 import os
 import tomllib
 from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+
+from ricardi import schema
 
 if TYPE_CHECKING:
     from ricardi.grants import GrantStore
@@ -685,31 +686,15 @@ def _rule_keys() -> frozenset[str]:
 
 
 def _reject_unknown(p: Path, where: str, entry: Any, known: frozenset[str]) -> None:
-    """Refuse a key nothing reads, because dropping it is never narrowing.
-
-    This is the one mistake in policy.toml that used to be quiet, and it is the
-    one that makes a rule larger: `Rule.matches` treats a dimension the rule
-    does not name as matching everything, so `tols = ["Read"]` is not a rule
-    about two tools, it is a rule about all of them.
-    """
-    for key in entry:
-        if key in known:
-            continue
-        near = difflib.get_close_matches(str(key), sorted(known), n=1)
-        hint = f" Did you mean {near[0]!r}?" if near else ""
-        raise PolicyError(
-            f"{p}: {where} has an unknown key {str(key)!r}.{hint} Nothing reads "
-            "it, so whatever it was meant to bound is left unbounded."
-        )
+    problem = schema.unknown_key(where, entry, known)
+    if problem:
+        raise PolicyError(f"{p}: {problem}")
 
 
 def _reject_unknown_tables(p: Path, raw: dict[str, Any]) -> None:
-    for table in raw:
-        if table in _TABLES:
-            continue
-        near = difflib.get_close_matches(str(table), sorted(_TABLES), n=1)
-        hint = f" Did you mean {near[0]!r}?" if near else ""
-        raise PolicyError(f"{p}: unknown table {str(table)!r}.{hint}")
+    problem = schema.unknown_table(raw, _TABLES)
+    if problem:
+        raise PolicyError(f"{p}: {problem}")
 
 
 def load_limits(path: str | os.PathLike[str]) -> tuple[int, int]:
