@@ -14,10 +14,11 @@ into a denial.
 
 from __future__ import annotations
 
+import difflib
 import fnmatch
 import os
 import tomllib
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -670,6 +671,47 @@ class ClosedPolicy:
         )
 
 
+# Every table policy.toml may contain, and every key each one may carry. The
+# rule keys come from `Rule` itself so a new dimension cannot be added without
+# this guard learning about it; the rest are written out beside their readers.
+_TABLES = frozenset({"limits", "identity", "owner", "rule"})
+_IDENTITY_KEYS = frozenset({"slack", "email"})
+_OWNER_KEYS = frozenset({"agent", "email"})
+_LIMITS_KEYS = frozenset({"turns_per_minute", "turns_per_hour"})
+
+
+def _rule_keys() -> frozenset[str]:
+    return frozenset(f.name for f in fields(Rule))
+
+
+def _reject_unknown(p: Path, where: str, entry: Any, known: frozenset[str]) -> None:
+    """Refuse a key nothing reads, because dropping it is never narrowing.
+
+    This is the one mistake in policy.toml that used to be quiet, and it is the
+    one that makes a rule larger: `Rule.matches` treats a dimension the rule
+    does not name as matching everything, so `tols = ["Read"]` is not a rule
+    about two tools, it is a rule about all of them.
+    """
+    for key in entry:
+        if key in known:
+            continue
+        near = difflib.get_close_matches(str(key), sorted(known), n=1)
+        hint = f" Did you mean {near[0]!r}?" if near else ""
+        raise PolicyError(
+            f"{p}: {where} has an unknown key {str(key)!r}.{hint} Nothing reads "
+            "it, so whatever it was meant to bound is left unbounded."
+        )
+
+
+def _reject_unknown_tables(p: Path, raw: dict[str, Any]) -> None:
+    for table in raw:
+        if table in _TABLES:
+            continue
+        near = difflib.get_close_matches(str(table), sorted(_TABLES), n=1)
+        hint = f" Did you mean {near[0]!r}?" if near else ""
+        raise PolicyError(f"{p}: unknown table {str(table)!r}.{hint}")
+
+
 def load_limits(path: str | os.PathLike[str]) -> tuple[int, int]:
     """Read the [limits] table. Declared with the roster, since it governs people."""
     p = Path(path).expanduser()
@@ -678,6 +720,7 @@ def load_limits(path: str | os.PathLike[str]) -> tuple[int, int]:
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise PolicyError(f"{p} could not be read: {exc}") from exc
     table = raw.get("limits") or {}
+    _reject_unknown(p, "[limits]", table, _LIMITS_KEYS)
     per_minute = int(table.get("turns_per_minute", 0) or 0)
     per_hour = int(table.get("turns_per_hour", 0) or 0)
     if per_minute < 0 or per_hour < 0:
@@ -694,8 +737,15 @@ def load(path: str | os.PathLike[str]) -> RulesPolicy:
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise PolicyError(f"{p} could not be read: {exc}") from exc
 
+    _reject_unknown_tables(p, raw)
+    # Checked here as well as in `load_limits`, which reads it: this is the
+    # call startup makes first, and a typo anywhere in the file should stop
+    # the process at one place rather than two calls apart.
+    _reject_unknown(p, "[limits]", raw.get("limits") or {}, _LIMITS_KEYS)
+
     roster: dict[str, str] = {}
     for entry in raw.get("identity") or []:
+        _reject_unknown(p, "an [[identity]]", entry, _IDENTITY_KEYS)
         slack = str(entry.get("slack", "")).strip()
         email = str(entry.get("email", "")).strip()
         if not slack or not email:
@@ -712,6 +762,7 @@ def load(path: str | os.PathLike[str]) -> RulesPolicy:
 
     owners: dict[str, tuple[str, ...]] = {}
     for entry in raw.get("owner") or []:
+        _reject_unknown(p, "an [[owner]]", entry, _OWNER_KEYS)
         agent = normalise_name(str(entry.get("agent", "")))
         email = normalise(str(entry.get("email", "")))
         if not agent or not email:
@@ -721,7 +772,9 @@ def load(path: str | os.PathLike[str]) -> RulesPolicy:
         owners[agent] = (*owners.get(agent, ()), email)
 
     rules: list[Rule] = []
+    known = _rule_keys()
     for entry in raw.get("rule") or []:
+        _reject_unknown(p, f"rule {str(entry.get('name', '?'))!r}", entry, known)
         effect = str(entry.get("effect", "")).strip().lower()
         if effect not in {"allow", "deny"}:
             raise PolicyError(
