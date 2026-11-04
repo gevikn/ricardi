@@ -8,6 +8,10 @@ on 2026-10-28. Calls marked **(builder's call)** were made in this document and
 are open to revision. Findings cited as H1–H5, F1–F2, R1–R7 and L0–L4 come from
 the access simulation, which is runnable — see "Evidence" at the end.
 
+**Amended 2026-11-04 — step 5 splits and the checker gets a caller; see §16.**
+Steps 1–3 are built and merged. Sections amended in place carry a dated note
+pointing at §16; nothing earlier was deleted.
+
 ---
 
 ## 1. Intent
@@ -486,6 +490,11 @@ read-only; each name has a budget and a turn ceiling; every rule named. It reads
 config that already exists, so it is cheap, and it is where the H1 and H2
 regressions belong once fixed.
 
+**Amended 2026-11-04 (§16).** These assertions are one family — *is the dial
+where you think it is*. The report grows a second — *does the configured world
+hang together* — and moves out of step 6 into step 5, because it is what makes a
+hand-applied name verifiable without an applier.
+
 ---
 
 ## 10. Identity
@@ -595,6 +604,13 @@ leave a reviewed request to fail at the restart that would have applied it.
 **Not built: the applier.** A merged request is an instruction to an admin, not
 a trigger. Applying it needs the grant store and the answers in §14.
 
+**Also not built, and not noticed until 2026-11-04: the checker has no caller.**
+`provision.py` is reachable from nothing but `test_provision.py` — no CLI
+subcommand, no CI job. "CI runs `check`" above describes a wiring that was never
+done, so no request a human wrote has ever been validated by anything. Every
+refusal listed below is real and tested against fixtures, and inert against the
+file that matters. §16 fixes this; it is the cheapest item in this document.
+
 ### Applying a request
 
 **This is a job with partial-failure states, not a function** (R5). It spans:
@@ -613,7 +629,23 @@ against:
 plus a reconcile command that can be run repeatedly until a name is whole. Do not
 attempt rollback across systems; converge forward.
 
+**Amended 2026-11-04 (§16): these seven steps do not have one fate.** Two are
+superseded by the interfaces design, three survive whatever the transport is,
+and two wait behind §14 question 4. The reconcile command is answered in halves
+— the read-only half ships now as `check`'s wholeness family, the
+converge-forward half waits. See §16 D1 and D5.
+
 ### Slack scopes
+
+**Superseded 2026-11-04 (§16 D1), and permanently rather than deferred.** None
+of these scopes will be requested: the channel-creation and invitation steps are
+replaced by the Access-authenticated link in
+[`2026-10-29-own-interfaces-design.md`](2026-10-29-own-interfaces-design.md) §6,
+whose goal 3 is that onboarding is a link rather than a workspace invitation
+plus a channel invitation plus a roster edit. §14 question 2 and §15.2 are
+answered by that, not by the owner choosing convenience. The analysis below is
+kept because it is the evidence for the decision, and because it records what a
+second transport would have to re-derive.
 
 Checked against Slack's reference rather than guessed. The **method** is
 `conversations.create` with `is_private: true`; the **bot scope** for a private
@@ -696,9 +728,12 @@ Forced, bottom-up:
    values, delegation bounded by the ceiling.
 4. **Channel 1:1 name.** Including the directory that replaces the dropped
    selector, and retiring most of `ThreadBindings`.
-5. **Provisioning.** The job, the reconcile command, the Slack scope change.
-6. **Later, independently:** the hold; the owner CLI; `ricardi check --strict`;
-   per-name `ClaudeAccount`.
+5. **Provisioning** — *rewritten 2026-11-04, see §16.* No longer one job. The
+   checker gets its two callers (CLI and CI); `check` gets its wholeness family
+   and its exit code; the name-and-grant steps of the applier follow. The Slack
+   scope change is dropped, and the repo steps wait behind §14 question 4.
+6. **Later, independently:** the hold; the owner CLI; per-name `ClaudeAccount`.
+   (`ricardi check --strict` was here and moved up into step 5.)
 
 ---
 
@@ -722,6 +757,9 @@ Re-ranked: the first three gate the build order rather than the deferred tail.
    manifest change, an app re-install and three new scopes, and a bot cannot
    invite into a private channel it is not in. By-hand makes step 5 materially
    smaller. Requirement or convenience?
+   **Answered 2026-11-04 (§16 D1): neither — the question dissolves.** Slack
+   stops being the onboarding surface at all, so the scopes are never requested
+   and the step is superseded rather than assigned to a human.
 3. **Is the grant store ever shared between several Ricardi instances** — one per
    Slack workspace — or always one instance, one store? SQLite is comfortable for
    the second and the wrong tool for the first, and it is the second thing built.
@@ -731,6 +769,12 @@ Re-ranked: the first three gate the build order rather than the deferred tail.
    more important than any rule you will write. The provisioning plan (create a
    repo, add collaborators) reverses that deliberate absence and is the one
    widening here that reaches off the box into other people's accounts.
+   **Still open, deliberately, and now gating less (§16 D1, D4).** It blocks only
+   the repo and collaborator steps; nothing else in step 5 waits on it. Note that
+   H3 — a `command_matches` deny for pushing — is *still unbuilt*, and §12 records
+   that its only mitigation today is the absence of push credentials *which this
+   question would remove*. Answering it "yes" before H3 exists trades a mechanism
+   for a rule that is not written.
 5. **Does the first release need a per-person spend bound?** (R2) A reader can
    exhaust the owner's budget, since budget is per name and shared by every
    member. If this must ship, `limits.py` grows from in-memory per-person turn
@@ -832,6 +876,136 @@ user-facing help, because the two are easy to confuse and only one is true.
 The builder found `sdk.py:187/194` are off by one (186/193) and otherwise point
 where this document says. Cited line numbers throughout are indicative; verify
 before editing.
+
+---
+
+## 16. Amendment, 2026-11-04: step 5 splits, and the checker gets a caller
+
+Occasioned by sequencing this document's step 5 against
+[`2026-10-29-own-interfaces-design.md`](2026-10-29-own-interfaces-design.md),
+which demotes Slack to a lossy renderer (its §13) and makes onboarding a link
+(its goal 3). Three findings forced an amendment rather than a reordering.
+
+**Finding 1.** `provision.py` has no caller. Verified against the tree at
+`f8f2b7b`: no `provision` subcommand in `cli.py`, no reference in
+`.github/workflows/`, and the only importer is `tests/test_provision.py`. The
+request surface is validated by unit test against fixtures and by nothing
+against a file a human wrote.
+
+**Finding 2.** The applier's seven steps have three different fates, so
+"build it" and "defer it" are both wrong.
+
+**Finding 3.** H3 is still unbuilt, and §12 says its only mitigation is the
+absence of push credentials *that the provisioning plan removes*. The applier's
+repo steps would delete a mechanism in favour of a rule nobody has written.
+
+### D1. Step 5 splits by step
+
+| Step | Fate |
+| :- | :- |
+| create the channel | **superseded** — interfaces §6 and goal 3 |
+| invite people | **superseded** — same |
+| mint key | survives, transport-independent |
+| lay out disk | survives, transport-independent |
+| register the name | survives, transport-independent |
+| record grants | survives, transport-independent |
+| create or clone repo, add collaborators | **gated** on §14 question 4 |
+
+Superseded means never built, not built later: with those two steps go the
+manifest change, the app re-install, `groups:write`, `users:read` and the
+unconfirmed `conversations.invite` scope. A browser invitee needs a resolvable
+name, an existing `cwd`, a key and a grant row exactly as a Slack invitee did —
+which is why the middle four are independent of who renders the session.
+
+### D2. The checker gets two callers, now
+
+**A CLI subcommand** over the existing module — takes a request path, refuses
+exactly what `provision.py` already refuses, exits non-zero on refusal.
+
+**A CI job** on pull requests touching `requests/`, running that same
+subcommand over each request file.
+
+Both, not either. CI is what makes the reviewed-PR shape load-bearing: §11
+argues the escalation step is a human pressing merge, and today merge asserts
+that nothing was checked. The CLI is what the admin runs on the box before
+applying by hand. They must be the same code path so the two cannot drift —
+the same reason §11 already drives the real `config.load` from a test.
+
+### D3. `ricardi check` carries two families, and `--strict` sets the exit code
+
+Family A, **posture** (§9, unchanged): *is the dial where you think it is.*
+
+Family B, **wholeness** (new): *does the configured world hang together.*
+
+- every name in `agents.toml` has at least one grant row
+- every grant row names a name that exists in config
+- every name's `cwd` exists and is a directory — `config.load` already refuses
+  this, so the value here is reporting it *before* the restart that would
+- every path in a name's `roots` (H2) exists
+- every granted person resolves to a roster identity in `policy.toml`
+- every roster identity holds at least one grant, or is reported as inert
+- the credential the process will use is present — **existence only, never
+  contents.** `health.py` classifies it from real turns; this answers before any
+  turn has run. One assertion today, per-name when `ClaudeAccount` lands
+
+Read-only throughout: no network, no off-box reach, no credential contents, no
+secret in the output. It reads config, the grant store and the filesystem, all
+three of which already exist.
+
+`--strict` makes findings a non-zero exit so a deploy can gate on it; without
+it, `check` reports and exits zero.
+
+**Shape, because it decides whether this stays honest:** one predicate per
+assertion, as a pure function returning findings.
+`cli.unrostered_owners(policy) -> list[tuple[str, str]]` is already exactly that,
+with `warn_unrostered_owners` as a thin logging wrapper. Startup logs the subset
+worth warning about, `check` prints all of them, `--strict` counts them. The
+startup warnings and the command **share the predicates**. Two copies of a
+safety assertion is one copy that goes stale.
+
+### D4. Why this is the better posture, not the cheaper path
+
+Recorded so it is not re-litigated, and because the owner asked the question
+directly.
+
+- **Declining the Slack scopes is a permanent reduction in what a stolen bot
+  token can do.** The manifest stays at `app_mentions:read`, `chat:write`,
+  `channels:history`, `groups:history`. Onboarding capability is close to the
+  worst thing to attach to a long-lived token: wanted rarely, available always.
+- **Not building the git identity keeps a mechanism instead of a rule.** See
+  Finding 3 and §12 H4, which records that `command_matches` is sound as a deny
+  and unsound as an allow — so the replacement control is the right shape and is
+  not written.
+- **A half-applied name fails closed.** A grant row is required to address a
+  name, so an incomplete name does not resolve rather than resolving too widely,
+  and a missing `cwd` is refused loudly at restart. The cost of hand-applying is
+  operational breakage, not escalation.
+- **The residual risk is a grant typed rather than derived.** Bounded: the store
+  is subtract-only against the `policy.toml` ceiling, so the worst case is more
+  than intended *up to what the reviewed file already permits for that name*,
+  never past it. Traced: `grant_log` records `person, name, verb, granted, by,
+  at`, append-only by SQL trigger, and `--by` is required with no default and no
+  inference. Self-asserted: nothing verifies the typist is who they claim, which
+  is correct under §2 and is the right place to notice the limit. **Unreviewed is
+  the real gap** — no diff, no second reader — and D2 narrows it by making a
+  checked request the thing the admin reads from.
+
+What is *not* claimed: this adds no determinism to the act of applying. Four of
+§11's five bad states stay silent during the work. D3 is what makes them
+loud afterwards, which is a different and cheaper guarantee.
+
+### D5. Promotion, and the reconcile command answered in halves
+
+`ricardi check --strict` leaves step 6 and joins step 5. §11's builder's call
+asked for "a reconcile command that can be run repeatedly until a name is
+whole": the **read-only half** ships now as family B and makes a hand-applied
+name verifiable; the **converge-forward half** waits behind question 4 and is no
+longer needed for that verifiability.
+
+### What this amendment does not answer
+
+§14 question 4 stays open on purpose. It now gates only the repo and
+collaborator steps, and nothing here depends on it.
 
 ---
 
