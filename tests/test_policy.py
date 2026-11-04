@@ -434,3 +434,90 @@ def test_neither_example_lets_a_search_run_from_the_root(policy_file):
 
     assert asyncio.run(pol.decide(grep(pattern="sk-ant", path="/"))).allow is False
     assert asyncio.run(pol.decide(grep(pattern="sk-ant"))).allow is False
+
+
+# -- a typo must not widen a rule -----------------------------------------
+# Every other mistake in this file is loud: a bad effect raises, a half-written
+# identity raises, a duplicate owner raises. The quiet one was the only one
+# that made a rule *larger*, because an unnamed dimension matches everything.
+
+
+def test_a_misspelled_rule_key_is_refused_rather_than_read_as_no_key(tmp_path):
+    # One letter short of `tools`. Before this was an error the rule loaded
+    # with tools=(), which matches every tool there is -- so the rule its
+    # author read back as "Read and Grep" permitted Write to /etc/passwd.
+    path = write(
+        tmp_path,
+        '[[rule]]\nname = "read-only tools"\neffect = "allow"\n'
+        'actions = ["tool"]\ntols = ["Read", "Grep"]\n',
+    )
+    with pytest.raises(P.PolicyError, match="tols"):
+        P.load(path)
+
+
+def test_the_refusal_names_the_rule_and_suggests_what_was_meant(tmp_path):
+    path = write(
+        tmp_path,
+        '[[rule]]\nname = "read-only tools"\neffect = "allow"\ntols = ["Read"]\n',
+    )
+    with pytest.raises(P.PolicyError) as got:
+        P.load(path)
+    message = str(got.value)
+    assert "read-only tools" in message
+    assert "tools" in message
+
+
+def test_an_unknown_identity_key_is_refused(tmp_path):
+    path = write(
+        tmp_path,
+        '[[identity]]\nslack = "U1"\nemail = "a@b.c"\nemial = "c@d.e"\n'
+        '\n[[rule]]\neffect = "allow"\n',
+    )
+    with pytest.raises(P.PolicyError, match="emial"):
+        P.load(path)
+
+
+def test_an_unknown_owner_key_is_refused(tmp_path):
+    path = write(
+        tmp_path,
+        '[[owner]]\nagent = "ricardi"\nemail = "a@b.c"\nteir = "write"\n'
+        '\n[[rule]]\neffect = "allow"\n',
+    )
+    with pytest.raises(P.PolicyError, match="teir"):
+        P.load(path)
+
+
+def test_an_unknown_limits_key_is_refused(tmp_path):
+    # The sharp end of this one: a misspelt limit is not a smaller limit, it
+    # is no limit at all.
+    path = write(
+        tmp_path,
+        '[limits]\nturns_per_minut = 5\n\n[[rule]]\neffect = "allow"\n',
+    )
+    with pytest.raises(P.PolicyError, match="turns_per_minut"):
+        P.load(path)
+
+
+def test_a_misspelled_table_name_is_refused_as_a_typo_not_an_empty_policy(tmp_path):
+    # `[[rules]]` already raised before this change -- but as "has no rules",
+    # which sends the reader looking for a missing rule rather than at the `s`
+    # they typed. Matching the table name alone would pass against that older,
+    # worse error, so this pins the wording that points at the typo.
+    path = write(tmp_path, '[[rules]]\neffect = "allow"\n')
+    with pytest.raises(P.PolicyError, match="unknown table") as got:
+        P.load(path)
+    assert "rules" in str(got.value)
+
+
+def test_every_key_the_rule_dataclass_names_is_accepted(tmp_path):
+    # The guard is derived from Rule's own fields, so adding a dimension must
+    # not need a second edit here. If this breaks, the derivation did.
+    import dataclasses
+
+    body = ['[[rule]]', 'effect = "allow"']
+    for f in dataclasses.fields(P.Rule):
+        if f.name in {"effect", "name", "path_under"}:
+            continue
+        body.append(f'{f.name} = ["x"]')
+    path = write(tmp_path, "\n".join(body) + "\n")
+    assert P.load(path).rules[0].effect == "allow"

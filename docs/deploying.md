@@ -160,6 +160,14 @@ Once tiers land, run `grants seed --by <your email>` again to write the tier
 rows. Nothing breaks if you forget: an absent tier means "unconstrained by
 tier", which is how every deployment behaved before tiers existed.
 
+A rule that *names* `tiers` is the other way round, and loud about it. The
+tier comes from the store, so with no store open such a rule can never match
+-- which for a deny means it stops subtracting and the request falls through
+to whatever allow stands behind it. Ricardi refuses every request in that
+state, naming the rule, rather than deciding as if the deny were not there.
+The served path always opens a store, so this is a thing you meet embedding
+the policy engine, not on the box.
+
 Seeding grants what `policy.toml` already permits and nothing else, and it is
 idempotent: running it again adds nothing that is already in force, so it is
 safe to repeat.

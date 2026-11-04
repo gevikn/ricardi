@@ -17,9 +17,11 @@ from __future__ import annotations
 import fnmatch
 import os
 import tomllib
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+
+from ricardi import schema
 
 if TYPE_CHECKING:
     from ricardi.grants import GrantStore
@@ -476,6 +478,12 @@ class RulesPolicy:
         # from policy.toml only: nothing a running process does adds to it, so
         # ownership can never be bootstrapped from the database.
         self.owners = {n: tuple(e) for n, e in (owners or {}).items()}
+        # Rules written in terms of a tier need the store that supplies one.
+        # Named here so `decide` can refuse rather than quietly decide without
+        # them; see `_storeless_tier_refusal` for why that direction.
+        self._tier_rules = tuple(
+            rule.name or "(unnamed)" for rule in self.rules if rule.tiers
+        )
 
     def owns(self, email: str, agent: str) -> bool:
         """Whether this person is a named owner of this agent name. Decides nothing."""
@@ -489,6 +497,12 @@ class RulesPolicy:
         return Principal(id=slack_user_id, email=email, known=bool(email))
 
     async def decide(self, request: Request) -> Decision:
+        # Before the tier is filled, because this is about there being nothing
+        # to fill it from.
+        storeless = self._storeless_tier_refusal()
+        if storeless is not None:
+            return storeless
+
         # Before everything, so every branch and every rule sees it. Overwritten,
         # never filled-if-empty: a tier a caller brings with it is a way to
         # claim write from application code and skip the model, so whatever
@@ -622,6 +636,41 @@ class RulesPolicy:
         return Decision(allow=False, reason=self._default_reason(request), rule="")
 
     # -- what the human or the model is told ------------------------------
+    def _storeless_tier_refusal(self) -> Decision | None:
+        """Refuse everything when a rule names a tier and no store supplies one.
+
+        `decide` fills `request.tier` from the grant store and only when there
+        is one, so without a store the tier is always "" -- and `_any_glob`
+        returns False for an empty value, even against `*`. Every rule naming
+        `tiers` is therefore unmatchable on a storeless deployment.
+
+        For an `allow` that is harmless: a dead allow refuses. For a `deny` it
+        fails **open** -- the request falls through to whatever broad allow
+        stands behind it, and the audit line names that allow, so nothing in
+        the log says a deny was skipped. That asymmetry is why this refuses
+        rather than warns: a rule that cannot fire is a rule somebody meant,
+        and the subtract-only invariant is worth more than availability on a
+        deployment that is already misconfigured.
+
+        Refusing *everything*, rather than only what the tier rule would have
+        governed, because which requests those are is precisely what cannot be
+        known without the store.
+        """
+        if self.grants is not None or not self._tier_rules:
+            return None
+        named = ", ".join(repr(name) for name in self._tier_rules)
+        return Decision(
+            allow=False,
+            reason=(
+                f"Nothing is permitted: the rule {named} is written in terms of "
+                "a tier, and no grant store is open to say who holds one. The "
+                "rule could never match, and a deny that cannot match lets "
+                "things through. Configure the grant store, or take the tier "
+                "out of the rule."
+            ),
+            rule="tiers-without-a-store",
+        )
+
     def _deny_reason(self, request: Request, rule: Rule) -> str:
         if request.action == "tool":
             what = summarise(request.tool, request.tool_input)
@@ -670,6 +719,31 @@ class ClosedPolicy:
         )
 
 
+# Every table policy.toml may contain, and every key each one may carry. The
+# rule keys come from `Rule` itself so a new dimension cannot be added without
+# this guard learning about it; the rest are written out beside their readers.
+_TABLES = frozenset({"limits", "identity", "owner", "rule"})
+_IDENTITY_KEYS = frozenset({"slack", "email"})
+_OWNER_KEYS = frozenset({"agent", "email"})
+_LIMITS_KEYS = frozenset({"turns_per_minute", "turns_per_hour"})
+
+
+def _rule_keys() -> frozenset[str]:
+    return frozenset(f.name for f in fields(Rule))
+
+
+def _reject_unknown(p: Path, where: str, entry: Any, known: frozenset[str]) -> None:
+    problem = schema.unknown_key(where, entry, known)
+    if problem:
+        raise PolicyError(f"{p}: {problem}")
+
+
+def _reject_unknown_tables(p: Path, raw: dict[str, Any]) -> None:
+    problem = schema.unknown_table(raw, _TABLES)
+    if problem:
+        raise PolicyError(f"{p}: {problem}")
+
+
 def load_limits(path: str | os.PathLike[str]) -> tuple[int, int]:
     """Read the [limits] table. Declared with the roster, since it governs people."""
     p = Path(path).expanduser()
@@ -678,6 +752,7 @@ def load_limits(path: str | os.PathLike[str]) -> tuple[int, int]:
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise PolicyError(f"{p} could not be read: {exc}") from exc
     table = raw.get("limits") or {}
+    _reject_unknown(p, "[limits]", table, _LIMITS_KEYS)
     per_minute = int(table.get("turns_per_minute", 0) or 0)
     per_hour = int(table.get("turns_per_hour", 0) or 0)
     if per_minute < 0 or per_hour < 0:
@@ -694,8 +769,15 @@ def load(path: str | os.PathLike[str]) -> RulesPolicy:
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise PolicyError(f"{p} could not be read: {exc}") from exc
 
+    _reject_unknown_tables(p, raw)
+    # Checked here as well as in `load_limits`, which reads it: this is the
+    # call startup makes first, and a typo anywhere in the file should stop
+    # the process at one place rather than two calls apart.
+    _reject_unknown(p, "[limits]", raw.get("limits") or {}, _LIMITS_KEYS)
+
     roster: dict[str, str] = {}
     for entry in raw.get("identity") or []:
+        _reject_unknown(p, "an [[identity]]", entry, _IDENTITY_KEYS)
         slack = str(entry.get("slack", "")).strip()
         email = str(entry.get("email", "")).strip()
         if not slack or not email:
@@ -712,6 +794,7 @@ def load(path: str | os.PathLike[str]) -> RulesPolicy:
 
     owners: dict[str, tuple[str, ...]] = {}
     for entry in raw.get("owner") or []:
+        _reject_unknown(p, "an [[owner]]", entry, _OWNER_KEYS)
         agent = normalise_name(str(entry.get("agent", "")))
         email = normalise(str(entry.get("email", "")))
         if not agent or not email:
@@ -721,7 +804,9 @@ def load(path: str | os.PathLike[str]) -> RulesPolicy:
         owners[agent] = (*owners.get(agent, ()), email)
 
     rules: list[Rule] = []
+    known = _rule_keys()
     for entry in raw.get("rule") or []:
+        _reject_unknown(p, f"rule {str(entry.get('name', '?'))!r}", entry, known)
         effect = str(entry.get("effect", "")).strip().lower()
         if effect not in {"allow", "deny"}:
             raise PolicyError(

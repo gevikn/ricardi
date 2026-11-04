@@ -211,3 +211,56 @@ cwd = {str(work)!r}
     settings = config.load(path)
     assert settings.health_every == 3600.0
     assert settings.alert_channel == ""
+
+
+# -- a typo here is quieter than in policy.toml, and still wrong ----------
+
+
+def test_an_unknown_agent_key_is_refused(tmp_path):
+    work = tmp_path / "repo"
+    work.mkdir()
+    path = write(
+        tmp_path,
+        f'[[agent]]\nnmae = "scout"\ncwd = {str(work)!r}\n',
+    )
+    with pytest.raises(config.ConfigError, match="nmae") as got:
+        config.load(path)
+    # The better message, not "has an [[agent]] with no name" -- which is true
+    # but sends the reader looking for a line they already wrote.
+    assert "name" in str(got.value)
+
+
+def test_an_unknown_ricardi_key_is_refused(tmp_path):
+    work = tmp_path / "repo"
+    work.mkdir()
+    path = write(
+        tmp_path,
+        f'[ricardi]\nalert_chanel = "C1"\n\n[[agent]]\nname = "s"\ncwd = {str(work)!r}\n',
+    )
+    with pytest.raises(config.ConfigError, match="alert_chanel") as got:
+        config.load(path)
+    assert "alert_channel" in str(got.value)
+
+
+def test_an_unknown_table_in_the_catalogue_is_refused(tmp_path):
+    work = tmp_path / "repo"
+    work.mkdir()
+    path = write(
+        tmp_path,
+        f'[[agents]]\nname = "s"\ncwd = {str(work)!r}\n',
+    )
+    with pytest.raises(config.ConfigError, match="unknown table"):
+        config.load(path)
+
+
+def test_a_key_that_moved_to_policy_still_says_where_it_went(tmp_path):
+    # The unknown-key guard runs first, so it must not swallow the message
+    # that tells people where tool permissions live now.
+    work = tmp_path / "repo"
+    work.mkdir()
+    path = write(
+        tmp_path,
+        f'[[agent]]\nname = "s"\ncwd = {str(work)!r}\nallowed_tools = ["Read"]\n',
+    )
+    with pytest.raises(config.ConfigError, match="moved to policy.toml"):
+        config.load(path)

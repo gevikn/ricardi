@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import os
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
+
+from ricardi import schema
 
 
 @dataclass(frozen=True)
@@ -59,6 +61,22 @@ class Settings:
     health_every: float = 3600.0
 
 
+# Derived from the dataclasses the keys feed, so a new setting cannot be added
+# without the guard learning about it. `allowed_tools` and `permission_mode`
+# are listed as known deliberately: they moved to policy.toml, and the error
+# that says so is better than "unknown key".
+_TABLES = frozenset({"agent", "ricardi"})
+_MOVED = frozenset({"allowed_tools", "permission_mode"})
+
+
+def _agent_keys() -> frozenset[str]:
+    return frozenset(f.name for f in fields(AgentSpec)) | _MOVED
+
+
+def _settings_keys() -> frozenset[str]:
+    return frozenset(f.name for f in fields(Settings)) - {"agents"}
+
+
 class ConfigError(Exception):
     """The catalogue could not be read, with a reason worth printing."""
 
@@ -75,13 +93,26 @@ def load(path: str | os.PathLike[str]) -> Settings:
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise ConfigError(f"{p} could not be read: {exc}") from exc
 
+    problem = schema.unknown_table(raw, _TABLES)
+    if problem:
+        raise ConfigError(f"{p}: {problem}")
+    problem = schema.unknown_key("[ricardi]", raw.get("ricardi") or {}, _settings_keys())
+    if problem:
+        raise ConfigError(f"{p}: {problem}")
+
     entries = raw.get("agent") or []
     if not entries:
         raise ConfigError(f"{p} declares no [[agent]] entries.")
 
     agents: list[AgentSpec] = []
     seen: set[str] = set()
+    agent_keys = _agent_keys()
     for entry in entries:
+        # Before the name check, so `nmae = "scout"` reads as the typo it is
+        # rather than as an [[agent]] with no name at all.
+        problem = schema.unknown_key("an [[agent]]", entry, agent_keys)
+        if problem:
+            raise ConfigError(f"{p}: {problem}")
         name = str(entry.get("name", "")).strip()
         if not name:
             raise ConfigError(f"{p} has an [[agent]] with no name.")
