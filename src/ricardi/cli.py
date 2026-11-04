@@ -113,7 +113,7 @@ async def _serve(args: argparse.Namespace) -> int:
     policy = policy_mod.load(args.policy)
     warn_unrostered_owners(policy)
     warn_unbounded_tool_allows(policy)
-    per_minute, per_hour = policy_mod.load_limits(args.policy)
+    declared_limits = policy_mod.load_limits(args.policy)
     # Unlike threads.json and sessions.json, which shrug off corruption because
     # they must not stop Ricardi answering, a corrupt grant store stops startup:
     # serving with no grants would deny everyone and look exactly like a policy
@@ -125,7 +125,9 @@ async def _serve(args: argparse.Namespace) -> int:
     # grants.db-wal.
     grants = GrantStore.open(settings.state_dir / "grants.db")
     policy.grants = grants
-    limits = Limits(per_minute=per_minute, per_hour=per_hour)
+    # Splatted, so an unset ceiling keeps the dataclass default rather than
+    # being read as "no ceiling": the grant ceilings default on.
+    limits = Limits(**declared_limits)
 
     # Order matters: the rate limiter wraps the rules so it can refuse a turn
     # the rules would allow, and the audit wraps both so its refusals are
@@ -223,10 +225,13 @@ async def _serve(args: argparse.Namespace) -> int:
     # what this process actually is. A banner only on stdout is the line you
     # most want when reading a log weeks later.
     logging.getLogger("ricardi").info(
-        "ricardi on %s; agents: %s; %d rules, %d people%s%s; audit %s",
+        "ricardi on %s; agents: %s; %d rules, %d people%s%s%s; audit %s",
         where, ", ".join(names), len(policy.rules), len(policy.roster),
-        f", {per_hour}/hour" if per_hour else "",
-        f", {per_minute}/minute" if per_minute else "",
+        f", {limits.per_hour}/hour" if limits.per_hour else "",
+        f", {limits.per_minute}/minute" if limits.per_minute else "",
+        # Said out loud because it is on by default: a ceiling nobody
+        # configured is one nobody knows to expect when it fires.
+        f", grants {limits.grants_per_minute}/minute" if limits.grants_per_minute else "",
         audit_path,
     )
     try:
