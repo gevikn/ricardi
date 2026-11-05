@@ -38,6 +38,19 @@
 turns_per_minute = 4
 turns_per_hour = 40
 
+# How often one person may change who may use an agent -- grant, revoke, reset
+# and scope, counted on their own allowance so that revoking someone twice
+# never costs you the turns you came for.
+#
+# Unlike the two above, these are NOT off when absent: they default to 6 and 30.
+# The failures are not alike. An unlimited ask is bounded by max_budget_usd and
+# by your patience; an unlimited grant is bounded by neither and appends to
+# state/grants.db, which nothing prunes, because the rows *are* the record of
+# who let whom in. A human does this a handful of times. A stuck client does it
+# until the disk complains. Write 0 if you truly want no ceiling.
+grants_per_minute = 6
+grants_per_hour = 30
+
 # ---------------------------------------------------------------- the roster
 # Slack user id -> an email that is a label for humans and audit logs. This is
 # the whole identity story: no directory lookups, so no extra Slack scopes, no

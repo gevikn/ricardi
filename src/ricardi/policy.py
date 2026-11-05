@@ -725,7 +725,17 @@ class ClosedPolicy:
 _TABLES = frozenset({"limits", "identity", "owner", "rule"})
 _IDENTITY_KEYS = frozenset({"slack", "email"})
 _OWNER_KEYS = frozenset({"agent", "email"})
-_LIMITS_KEYS = frozenset({"turns_per_minute", "turns_per_hour"})
+# The [limits] key a person writes, against the `limits.Limits` field it fills.
+# One source for both the loader and the unknown-key guard, so a new ceiling
+# cannot land with the guard unaware of it -- the shape #57 settled on for
+# rules, applied here, where the names deliberately differ from the fields.
+_LIMIT_FIELDS = {
+    "turns_per_minute": "per_minute",
+    "turns_per_hour": "per_hour",
+    "grants_per_minute": "grants_per_minute",
+    "grants_per_hour": "grants_per_hour",
+}
+_LIMITS_KEYS = frozenset(_LIMIT_FIELDS)
 
 
 def _rule_keys() -> frozenset[str]:
@@ -744,8 +754,15 @@ def _reject_unknown_tables(p: Path, raw: dict[str, Any]) -> None:
         raise PolicyError(f"{p}: {problem}")
 
 
-def load_limits(path: str | os.PathLike[str]) -> tuple[int, int]:
-    """Read the [limits] table. Declared with the roster, since it governs people."""
+def load_limits(path: str | os.PathLike[str]) -> dict[str, int]:
+    """Read the [limits] table. Declared with the roster, since it governs people.
+
+    Returns only what the file actually says, keyed by `limits.Limits` field
+    name, for the caller to splat. Two reasons it is not a tuple of ints: four
+    positional integers in one call is two ways to order them wrongly, and an
+    absent key has to stay absent so `Limits` can supply its own default --
+    which for the grant ceilings is not zero.
+    """
     p = Path(path).expanduser()
     try:
         raw = tomllib.loads(p.read_text(encoding="utf-8"))
@@ -753,11 +770,15 @@ def load_limits(path: str | os.PathLike[str]) -> tuple[int, int]:
         raise PolicyError(f"{p} could not be read: {exc}") from exc
     table = raw.get("limits") or {}
     _reject_unknown(p, "[limits]", table, _LIMITS_KEYS)
-    per_minute = int(table.get("turns_per_minute", 0) or 0)
-    per_hour = int(table.get("turns_per_hour", 0) or 0)
-    if per_minute < 0 or per_hour < 0:
-        raise PolicyError(f"{p}: a negative limit means nothing.")
-    return per_minute, per_hour
+    found: dict[str, int] = {}
+    for key, field in _LIMIT_FIELDS.items():
+        if key not in table:
+            continue
+        value = int(table[key] or 0)
+        if value < 0:
+            raise PolicyError(f"{p}: a negative limit means nothing.")
+        found[field] = value
+    return found
 
 
 def load(path: str | os.PathLike[str]) -> RulesPolicy:
