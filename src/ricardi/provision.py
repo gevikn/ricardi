@@ -117,6 +117,46 @@ def load(
     )
 
 
+def check(
+    path: str | os.PathLike[str],
+    *,
+    existing_names: tuple[str, ...] | list[str] = (),
+    max_budget_usd: float = 0.0,
+) -> tuple[SessionRequest | None, list[str]]:
+    """What is wrong with one request, for a caller that reports rather than stops.
+
+    `load` raises on the first problem, which is right for a caller applying one
+    request and wrong for one checking a directory of them: a reviewer wants
+    every file's verdict in one pass. So this returns findings instead, empty
+    when the request is fit to review, and the request itself so the caller can
+    hold its name against the next file.
+
+    The filename rule lives here rather than in `load` because it is about the
+    diff a reviewer reads, not about the request: `load` is also how a request
+    gets read from wherever it ends up after being applied.
+    """
+    p = Path(path).expanduser()
+    try:
+        request = load(p, existing_names=existing_names, max_budget_usd=max_budget_usd)
+    except RequestError as exc:
+        return None, [str(exc)]
+
+    findings: list[str] = []
+    # `provision.example.toml` is the file people copy, not a request, so the
+    # name inside it belongs to the session it demonstrates. Exempted by the
+    # repository's own `.example.toml` convention so that running this command
+    # on the template -- the obvious first thing to try -- answers about the
+    # template rather than about its filename.
+    template = Path(p.stem).suffix == ".example"
+    if not template and p.stem != request.name:
+        findings.append(
+            f"asks for the name {request.name!r} but is called {p.name}. Rename "
+            f"the file to {request.name}.toml, or change the name inside it -- "
+            "the filename is how a reviewer finds a request in a diff."
+        )
+    return request, findings
+
+
 def _only(table: dict, allowed: set[str], what: str) -> None:
     """Refuse a key nobody will read.
 

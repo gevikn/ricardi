@@ -328,8 +328,13 @@ def test_the_example_request_is_valid():
 # ------------------------------------------------------- the CI gate
 
 
-def test_every_request_in_the_repo_is_valid():
+def test_every_request_in_the_repo_is_valid(capsys):
     """The gate that makes the pull-request flow real.
+
+    Driven through `ricardi check-request` rather than through `provision.load`,
+    so this and the command an admin runs on the box are one code path. Two
+    copies of a safety assertion is one copy that goes stale -- the same reason
+    the policy tests drive the real `config.load`.
 
     Nothing to check until someone opens a request, and that is the correct
     answer rather than a vacuous one -- but the directory is asserted to exist,
@@ -338,13 +343,13 @@ def test_every_request_in_the_repo_is_valid():
     """
     from pathlib import Path
 
+    from ricardi.cli import main
+
     here = Path(__file__).resolve().parent.parent / "requests"
     assert here.is_dir(), f"{here} is missing, so this test checks nothing"
 
-    names: list[str] = []
-    for one in sorted(here.glob("*.toml")):
-        request = provision.load(one, existing_names=tuple(names))
-        # The filename is how a reviewer finds it in a diff, so it has to
-        # match what it asks for.
-        assert one.stem == request.name, f"{one.name} asks for {request.name!r}"
-        names.append(request.name)
+    # No --agents: the catalogue is gitignored, so it is absent in CI and
+    # present on a developer's machine. The command reports that difference
+    # and checks everything else either way.
+    assert main(["--env", "nope", "check-request", str(here)]) == 0, \
+        capsys.readouterr().out

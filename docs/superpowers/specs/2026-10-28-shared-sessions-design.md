@@ -9,8 +9,10 @@ are open to revision. Findings cited as H1–H5, F1–F2, R1–R7 and L0–L4 co
 the access simulation, which is runnable — see "Evidence" at the end.
 
 **Amended 2026-11-04 — step 5 splits and the checker gets a caller; see §16.**
-Steps 1–3 are built and merged. Sections amended in place carry a dated note
-pointing at §16; nothing earlier was deleted.
+**Amended 2026-11-05 — the caller is built, and one of §16's premises is
+withdrawn; see §17.** Steps 1–3 are built and merged. Sections amended in place
+carry a dated note pointing at the amendment that supersedes them; nothing
+earlier was deleted.
 
 ---
 
@@ -728,10 +730,12 @@ Forced, bottom-up:
    values, delegation bounded by the ceiling.
 4. **Channel 1:1 name.** Including the directory that replaces the dropped
    selector, and retiring most of `ThreadBindings`.
-5. **Provisioning** — *rewritten 2026-11-04, see §16.* No longer one job. The
-   checker gets its two callers (CLI and CI); `check` gets its wholeness family
-   and its exit code; the name-and-grant steps of the applier follow. The Slack
-   scope change is dropped, and the repo steps wait behind §14 question 4.
+5. **Provisioning** — *rewritten 2026-11-04, see §16; amended 2026-11-05, see
+   §17.* No longer one job. ~~The checker gets its two callers (CLI and CI)~~ —
+   **done**: `ricardi check-request` ships and the standing CI gate drives it.
+   `check` gets its wholeness family and its exit code; the name-and-grant steps
+   of the applier follow. The Slack scope change is dropped, and the repo steps
+   wait behind §14 question 4.
 6. **Later, independently:** the hold; the owner CLI; per-name `ClaudeAccount`.
    (`ricardi check --strict` was here and moved up into step 5.)
 
@@ -892,6 +896,14 @@ which demotes Slack to a lossy renderer (its §13) and makes onboarding a link
 request surface is validated by unit test against fixtures and by nothing
 against a file a human wrote.
 
+> **Corrected 2026-11-05 — half of this was wrong; see §17.** The grep over
+> `.github/workflows/` was accurate and the conclusion drawn from it was not.
+> `tests.yml` runs `uv run pytest -q` on every pull request, which runs
+> `test_every_request_in_the_repo_is_valid`, which loads every file in
+> `requests/` through `provision.load`. So CI has checked request files all
+> along, and "merge asserts that nothing was checked" (D2) was false. What was
+> genuinely missing is the caller a *person* can reach.
+
 **Finding 2.** The applier's seven steps have three different fates, so
 "build it" and "defer it" are both wrong.
 
@@ -918,6 +930,8 @@ name, an existing `cwd`, a key and a grant row exactly as a Slack invitee did �
 which is why the middle four are independent of who renders the session.
 
 ### D2. The checker gets two callers, now
+
+> **Amended 2026-11-05 — built as one caller plus one existing one; see §17.**
 
 **A CLI subcommand** over the existing module — takes a request path, refuses
 exactly what `provision.py` already refuses, exits non-zero on refusal.
@@ -1006,6 +1020,82 @@ longer needed for that verifiability.
 
 §14 question 4 stays open on purpose. It now gates only the repo and
 collaborator steps, and nothing here depends on it.
+
+---
+
+## 17. Amendment, 2026-11-05: D2 built, and one of its premises withdrawn
+
+### Finding 4. The CI caller already existed, as a test
+
+`.github/workflows/tests.yml` runs `uv run pytest -q` on `pull_request`, on
+`ubuntu-latest` and `windows-latest`, with no path filter. That run includes
+`test_every_request_in_the_repo_is_valid`, which globs `requests/*.toml` and
+loads each one through `provision.load`, holding the earlier names against the
+later files. So every request file in this repository has been checked on every
+pull request since the directory existed.
+
+§16's Finding 1 grepped the workflow directory for `provision`, found nothing,
+and concluded nothing ran. The grep was right; the conclusion was not. D2's
+argument that "today merge asserts that nothing was checked" is withdrawn.
+
+What was actually missing is the half a person can reach. The admin holding a
+merged request had no command to run — `provision.py` was reachable only by
+importing it — and `requests/README.md` told the owner to install the test
+dependencies and run a pytest selector to check their own file.
+
+### E1. No new CI job
+
+A job filtered to `requests/**`, as D2 specified, would run *less* often than
+what already runs: not when `provision.py` changes under an existing request,
+which is exactly the regression a standing gate is for. It would also be a
+second place the gate is spelled out, in a file the workflow trust guard has to
+keep honest.
+
+So the CI caller stays the test, and D2's "both, not either" is satisfied by one
+new caller rather than two.
+
+### E2. The gate drives the command
+
+`test_every_request_in_the_repo_is_valid` now calls
+`cli.main(["check-request", "requests"])` instead of `provision.load` directly.
+This is the part of D2 that was load-bearing: *"they must be the same code path
+so the two cannot drift"*. The test no longer re-states the filename rule or the
+name accumulation in its own assertions — it asserts an exit code, and the rules
+live in one place.
+
+### E3. `ricardi check-request <path|directory> ...`
+
+- Refuses exactly what `provision.py` refuses, in the words `provision.py`
+  already wrote; exit 1 on any finding, 0 on none.
+- **Reports every file**, not the first failure. A reviewer wants the list.
+- A directory means every `*.toml` in it, sorted. An **empty** directory is
+  reported out loud, because a glob over nothing is a green run that checked
+  nothing.
+- Names accumulate across the arguments, so two requests in one pull request
+  cannot both claim a name.
+- Reads `agents.toml` only for the names already taken, and **fails open with a
+  printed reason** when it cannot: the catalogue is gitignored, so CI and a
+  fresh clone have none, and `config.load` refuses one whose `cwd` is on another
+  machine. Refusing would mean the gate could not run where it runs; swallowing
+  would mean a silent collision. The reason is printed on every run that lacks
+  it.
+- The **filename must match the name asked for**, because that is how a reviewer
+  finds a request in a diff. This rule moved out of the test and into
+  `provision.check`. Files following the repository's `*.example.toml`
+  convention are exempt, so running the command on the shipped template — the
+  obvious first thing to try — answers about the template rather than about its
+  filename.
+- `--max-budget-usd` applies the admin's ceiling, which lives in no file.
+
+Read-only throughout, and it applies nothing: D1's surviving steps are still
+done by hand.
+
+### What this does not build
+
+`ricardi check` (D3) — the posture and wholeness families — is still unbuilt.
+It is a different question from this command and stays a separate one:
+`check-request` judges a proposed future against the rules, `check` judges the
+configured present against itself.
 
 ---
 
