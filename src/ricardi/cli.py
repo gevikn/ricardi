@@ -10,9 +10,16 @@ import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-from ricardi import config, policy as policy_mod, readiness
+from ricardi import checks, config, policy as policy_mod, readiness
 from ricardi.audit import AuditedPolicy, AuditLog
+from ricardi.checks import (
+    unbounded_tool_allows,
+    unrostered_owners,
+    warn_unbounded_tool_allows,
+    warn_unrostered_owners,
+)
 from ricardi.grants import (
+    Grant,
     GrantError,
     GrantStore,
     normalise,
@@ -44,62 +51,121 @@ def _load_env(path: Path) -> None:
         os.environ.setdefault(key.strip(), value)
 
 
-def unrostered_owners(policy: policy_mod.RulesPolicy) -> list[tuple[str, str]]:
-    """(name, email) for every [[owner]] whose email is not on the roster."""
-    on_roster = {normalise(e) for e in policy.roster.values()}
-    return [
-        (name, email)
-        for name, emails in policy.owners.items()
-        for email in emails
-        if normalise(email) not in on_roster
-    ]
+def _check_state_dir(args: argparse.Namespace, settings: config.Settings) -> Path:
+    """Where the grant store is, with the same override `grants` accepts.
 
-
-def warn_unrostered_owners(policy: policy_mod.RulesPolicy) -> None:
-    """Say so at startup, rather than refuse to start.
-
-    An owner who is not on the roster can never act: `decide` refuses an unknown
-    principal before any conferral check. That is a typo worth a line in the log,
-    but not worth a load-time error, which would turn it into a total outage.
+    `--state-dir` is not a second way to find state/: it overrides the value the
+    catalogue derives, for a store that lives somewhere else.
     """
-    for name, email in unrostered_owners(policy):
-        logging.getLogger("ricardi").warning(
-            "owner %s of %s is not in the [[identity]] roster, so they cannot act "
-            "as an owner until they are added.", email, name,
-        )
+    given = getattr(args, "state_dir", "")
+    if given:
+        return Path(given).expanduser()
+    return settings.state_dir or Path("state")
 
 
-def unbounded_tool_allows(policy: policy_mod.RulesPolicy) -> list[str]:
-    """Names of allow rules that let any tool run, because they name none.
+def grants_in_force(state_dir: Path) -> tuple[tuple[Grant, ...] | None, str]:
+    """The grants in force, or why they could not be read.
 
-    `Rule.matches` treats a dimension the rule does not name as matching
-    everything, so an allow with no `tools` is an allow for every tool there
-    is. Naming no `actions` is broader still: every action, tool calls among
-    them.
+    None rather than an empty tuple when the store will not open, because the
+    two must not look alike: an empty store means nobody has been granted
+    anything, and an unreadable one means nothing is known. Reporting the
+    first for the second sends somebody to re-seed a store that is fine.
     """
-    return [
-        rule.name or "(unnamed)"
-        for rule in policy.rules
-        if rule.effect == "allow"
-        and not rule.tools
-        and (not rule.actions or "tool" in rule.actions)
-    ]
+    try:
+        store = GrantStore.open(state_dir / "grants.db")
+    except GrantError as exc:
+        return None, str(exc)
+    try:
+        return store.current(), ""
+    except GrantError as exc:
+        return None, str(exc)
+    finally:
+        store.close()
 
 
-def warn_unbounded_tool_allows(policy: policy_mod.RulesPolicy) -> None:
-    """Say so at startup, rather than refuse to start.
+def _print_family(label: str, why: str, found: list[checks.Finding]) -> None:
+    print(f"{label} -- {why}")
+    if not found:
+        # Said out loud: a section that printed nothing reads exactly like a
+        # section that never ran, which is the trap this repo keeps meeting.
+        print("  nothing to report")
+        return
+    width = max(len(f.assertion) for f in found)
+    for one in found:
+        print(f"  {one.assertion.ljust(width)}  {one.text}")
 
-    "Every tool, for these people, under this root" is a legitimate thing to
-    mean, and the shipped example is careful never to need it -- so this is a
-    warning, not an error. What it buys is that the breadth has to be meant:
-    the loader now rejects the typo that produces it by accident, and this
-    catches the one somebody wrote on purpose and forgot.
+
+def _check_command(args: argparse.Namespace) -> int:
+    """Read the configured world back and say what is so.
+
+    §9's gap was that paranoia is achievable and not verifiable: every item on
+    the dial is "you can write it correctly" rather than "it cannot be wrong".
+    This is the readout, and `--strict` is what lets a deploy gate on it.
+
+    The two families get different consequences, which is the one decision this
+    command turns on. A wholeness finding is a defect -- something configured
+    cannot work -- so `--strict` counts it. A posture finding is a dial
+    position, and the shipped example deliberately sits off the tightest
+    setting, so counting those by default would fail the gate on a correct
+    configuration and get it deleted from the deploy within a week.
+    `--strict-posture` is for an operator who has decided their dial is at the
+    top and wants it held there.
     """
-    for name in unbounded_tool_allows(policy):
-        logging.getLogger("ricardi").warning(
-            "rule %r allows every tool there is, because it names none. "
-            "Add tools = [...] if that is not what was meant.", name,
-        )
+    strict = bool(args.strict)
+    strict_posture = bool(args.strict_posture)
+
+    blocked: list[str] = []
+    settings = None
+    policy = None
+    try:
+        settings = config.load(args.agents)
+    except config.ConfigError as exc:
+        blocked.append(f"the agent catalogue: {exc}")
+    try:
+        policy = policy_mod.load(args.policy)
+    except policy_mod.PolicyError as exc:
+        blocked.append(f"the policy: {exc}")
+
+    if settings is None or policy is None:
+        # Nothing below these two can be asserted, and a report that says no
+        # findings because it never reached the files is worse than no report.
+        print("not checked:")
+        for line in blocked:
+            print(f"  {line}")
+        print("nothing was checked.")
+        return 1 if (strict or strict_posture) else 0
+
+    grants, why = grants_in_force(_check_state_dir(args, settings))
+    if why:
+        blocked.append(f"the grant store: {why}")
+
+    posture = checks.posture(policy, settings)
+    whole = checks.wholeness(
+        settings, policy, grants, env=os.environ, home=Path.home()
+    )
+
+    _print_family("posture", "is the dial where you think it is", posture)
+    _print_family("wholeness", "does the configured world hang together", whole)
+    if blocked:
+        print("not checked:")
+        for line in blocked:
+            print(f"  {line}")
+    # Counted apart because only one of the three decides an exit code, and a
+    # summary that lumps them together is read as though all of them do.
+    gating = [one for one in whole if one.gating]
+    notes = len(whole) - len(gating)
+    print(f"{len(posture)} posture note(s), {len(gating)} wholeness finding(s)"
+          + (f" and {notes} wholeness note(s)" if notes else "") + ".")
+
+    if strict and gating:
+        return 1
+    if strict_posture and posture:
+        return 1
+    # An assertion that did not run must not read as one that passed, which is
+    # the only thing a gate is asking about.
+    if blocked and (strict or strict_posture):
+        return 1
+    return 0
 
 
 async def _serve(args: argparse.Namespace) -> int:
@@ -500,6 +566,29 @@ def main(argv: list[str] | None = None) -> int:
              "is in no file, so it is given here; without it no ceiling is "
              "applied at this step",
     )
+    # The same arrangement again: accepted on either side of the subcommand,
+    # with SUPPRESS so an unset default cannot overwrite a value given before.
+    overrides = argparse.ArgumentParser(add_help=False)
+    overrides.add_argument("--agents", default=argparse.SUPPRESS)
+    overrides.add_argument("--policy", default=argparse.SUPPRESS)
+    overrides.add_argument("--state-dir", default=argparse.SUPPRESS, help=state_help)
+    report = sub.add_parser(
+        "check",
+        parents=[overrides],
+        help="read the configured world back: the posture dial, and whether "
+             "what is configured hangs together. Changes nothing",
+    )
+    report.add_argument(
+        "--strict", action="store_true",
+        help="exit non-zero on a wholeness finding, so a deploy can gate on it. "
+             "Posture notes are a readout and do not fail: the shipped example "
+             "deliberately sits off the tightest setting",
+    )
+    report.add_argument(
+        "--strict-posture", action="store_true",
+        help="exit non-zero on a posture note as well, for a dial that has been "
+             "decided and should stay put",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -514,6 +603,8 @@ def main(argv: list[str] | None = None) -> int:
             return _grants_command(args)
         if args.command == "check-request":
             return _check_request_command(args)
+        if args.command == "check":
+            return _check_command(args)
         return asyncio.run(_serve(args))
     except (config.ConfigError, policy_mod.PolicyError, GrantError) as exc:
         print(f"ricardi: {exc}", file=sys.stderr)

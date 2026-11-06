@@ -10,7 +10,9 @@ the access simulation, which is runnable — see "Evidence" at the end.
 
 **Amended 2026-11-04 — step 5 splits and the checker gets a caller; see §16.**
 **Amended 2026-11-05 — the caller is built, and one of §16's premises is
-withdrawn; see §17.** Steps 1–3 are built and merged. Sections amended in place
+withdrawn; see §17.**
+**Amended 2026-11-06 — `ricardi check` is built, and `--strict` turned out to
+need two kinds of finding, not one; see §18.** Steps 1–3 are built and merged. Sections amended in place
 carry a dated note pointing at the amendment that supersedes them; nothing
 earlier was deleted.
 
@@ -731,10 +733,11 @@ Forced, bottom-up:
 4. **Channel 1:1 name.** Including the directory that replaces the dropped
    selector, and retiring most of `ThreadBindings`.
 5. **Provisioning** — *rewritten 2026-11-04, see §16; amended 2026-11-05, see
-   §17.* No longer one job. ~~The checker gets its two callers (CLI and CI)~~ —
-   **done**: `ricardi check-request` ships and the standing CI gate drives it.
-   `check` gets its wholeness family and its exit code; the name-and-grant steps
-   of the applier follow. The Slack scope change is dropped, and the repo steps
+   §17; amended 2026-11-06, see §18.* No longer one job. ~~The checker gets its
+   two callers (CLI and CI)~~ — **done**: `ricardi check-request` ships and the
+   standing CI gate drives it. ~~`check` gets its wholeness family and its exit
+   code~~ — **done**: `ricardi check` ships with both families and two strict
+   flags. The name-and-grant steps of the applier follow. The Slack scope change is dropped, and the repo steps
    wait behind §14 question 4.
 6. **Later, independently:** the hold; the owner CLI; per-name `ClaudeAccount`.
    (`ricardi check --strict` was here and moved up into step 5.)
@@ -947,6 +950,14 @@ the same reason §11 already drives the real `config.load` from a test.
 
 ### D3. `ricardi check` carries two families, and `--strict` sets the exit code
 
+> **Built 2026-11-06, with one correction — see §18.** The families and the
+> predicate shape below are what shipped. What did not survive contact is the
+> single exit rule: counting a posture finding would fail the gate on a correct
+> configuration, including the shipped example. `--strict` counts the wholeness
+> family; `--strict-posture` is the opt-in for a decided dial. Two of the seven
+> wholeness assertions below turned out to belong to `config.load`, which
+> already refuses them.
+
 Family A, **posture** (§9, unchanged): *is the dial where you think it is.*
 
 Family B, **wholeness** (new): *does the configured world hang together.*
@@ -1092,10 +1103,106 @@ done by hand.
 
 ### What this does not build
 
-`ricardi check` (D3) — the posture and wholeness families — is still unbuilt.
-It is a different question from this command and stays a separate one:
-`check-request` judges a proposed future against the rules, `check` judges the
-configured present against itself.
+~~`ricardi check` (D3) — the posture and wholeness families — is still
+unbuilt.~~ *Built 2026-11-06; see §18.* It remains a different question from
+this command and a separate one: `check-request` judges a proposed future
+against the rules, `check` judges the configured present against itself.
+
+---
+
+## 18. Amendment, 2026-11-06: `ricardi check`, and two kinds of finding
+
+D3 is built. The families, the predicate shape and the read-only constraint are
+as §16 specified. What changed is the exit rule, and it changed for a reason
+worth keeping written down.
+
+### F1. A single `--strict` would have failed on a correct configuration
+
+§16 said "`--strict` makes findings a non-zero exit so a deploy can gate on it",
+with one kind of finding. Running the posture family against
+`policy.example.toml` is what settles it: the shipped example **allows commands
+by argv shape** and **points one read rule at the directory above every
+checkout**. Both are deliberate — the file's own comments argue for them — and
+both are posture findings, because §9 asks for them to be asserted.
+
+So a single `--strict` fails on the configuration this repository ships as
+correct. A gate that fails on a correct configuration is a gate somebody deletes
+from the deploy inside a week, and then nothing is verified at all. §9's
+complaint was that paranoia is *achievable but not verifiable*; a readout nobody
+can gate on is the same complaint with extra steps.
+
+**The split, by what a finding means:**
+
+- **Wholeness is a defect.** Something is configured and cannot work: a name no
+  grant row reaches, a grant on a name the catalogue does not declare, a rule
+  naming an agent that does not exist, an owner or grant-holder off the roster,
+  no usable credential. `--strict` counts these.
+- **Posture is a dial position.** Every item is a legitimate thing to mean.
+  Printed always, counted by `--strict-posture` only — the opt-in for an
+  operator who has decided their dial and wants it held there.
+
+No acknowledgement file, deliberately: a `[check]` table listing accepted
+findings would be the one piece of this that can silence an assertion, and the
+accepted-forever list is how a readout becomes decoration. An accepted posture
+note stays printed.
+
+### F2. One wholeness assertion is a note, not a finding
+
+§16 words this one differently from its siblings — "every roster identity holds
+at least one grant, **or is reported as inert**" — and that wording is load
+bearing. Somebody added to the roster before anyone grants them anything is in
+the correct state; it is the normal order of a new teammate's first day. Gating
+on it would fail the deploy that *adds* them.
+
+So a finding carries whether it gates, `inert-identity` is the one wholeness
+assertion that does not, and the summary counts notes separately. Every posture
+finding is non-gating by construction, set in one place rather than on seven
+call sites, because one omission there would make a dial position fail a deploy.
+
+### F3. Two of the seven wholeness assertions belong to the loader
+
+§16 asked `check` to assert that every name's `cwd` exists and that every path in
+`roots` exists — and noted for `cwd` that "`config.load` already refuses this".
+Both are already refused, `roots` included. Reimplementing them here would mean
+a second, lenient parser of `agents.toml`, which is two copies of the rule that
+decides whether a name is usable.
+
+So `check` **delegates both** and reports the loader's own refusal under
+`not checked:` — the refusal sentence *is* the finding, and it is better worded
+than anything a duplicate would produce. The cost is honest and stated: when the
+catalogue will not load, the assertions below it do not run. They are reported as
+not run rather than as passing, and `--strict` fails on that, because "we could
+not look" is not a yes. The same treatment covers a policy that will not load
+and a grant store that will not open — the last skipping only the four
+assertions that read it, since an unreadable store must not be answered as an
+empty one.
+
+### F4. What was added beyond §16
+
+- **`dead-rule`** (wholeness): a rule naming `agents` that match no name in the
+  catalogue can never match — and a deny that cannot match allows what it meant
+  to refuse. The mirror of "every grant row names a name that exists", on the
+  policy side of the file, and the same class of typo.
+- **`--state-dir`** on `check`, the same override `grants` already accepts.
+- **The credential assertion is a second implementation** of
+  `install-service.sh`'s three rules, not a shared one: that script runs before
+  the virtualenv exists, so it cannot call Python. Both are pinned by tests,
+  which is the only thing that keeps two copies honest. Existence only — nothing
+  reads a credential's value, and the tests assert no value can reach the output,
+  because a report is something people paste into a channel.
+
+### F5. What this does not build
+
+- **No deploy-gate wiring.** `check --strict` is gateable and is not yet in
+  `deploy.yml`. Landing it there changes when a deploy refuses, on a box whose
+  current state nobody has read back yet — that is the owner's call, and the
+  first run of the command on the box is the input to it.
+- **"Each mount read-only"**, from §9's list, is not asserted. It is a property
+  of the compose file and the filesystem, not of the configuration this command
+  reads, and inferring it from either would be a guess printed as an assertion.
+- **`Principal.known`** (§9 gap 3) is still computed and never read. A posture
+  assertion cannot fix that one; it needs the rules to be able to *require* a
+  known asker, which is a policy change, not a readout.
 
 ---
 
