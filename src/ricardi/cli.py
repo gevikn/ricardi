@@ -313,6 +313,94 @@ def _grants_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def catalogue_names(path: str | os.PathLike[str]) -> tuple[tuple[str, ...], str]:
+    """The names already taken, and why they could not be read if they were not.
+
+    Degrades to a reason rather than an error on purpose. `agents.toml` names
+    real directories on one machine, so it is gitignored: CI has none, a fresh
+    clone has none, and `config.load` refuses one whose `cwd` is somewhere
+    else. Refusing here would mean the check could not run in the one place
+    that runs it on every pull request. Swallowing it would mean a collision
+    silently goes unchecked, which is the failure the request flow exists to
+    catch -- so the caller prints the reason.
+    """
+    try:
+        settings = config.load(path)
+    except config.ConfigError as exc:
+        return (), str(exc)
+    return tuple(a.name for a in settings.agents), ""
+
+
+def request_files(paths: list[str]) -> tuple[list[Path], list[str]]:
+    """The request files to check, and the directories that held none.
+
+    A directory means every request in it, sorted, so one command covers the
+    whole directory CI checks and the single file an owner is editing. An empty
+    directory is reported rather than passing quietly: a glob over nothing is a
+    green run that checked nothing, which this repo has been bitten by before.
+    """
+    files: list[Path] = []
+    empty: list[str] = []
+    for one in paths:
+        p = Path(one).expanduser()
+        if not p.is_dir():
+            # A path that is not there is left to the checker, whose message
+            # about a missing request is better than anything here.
+            files.append(p)
+            continue
+        found = sorted(p.glob("*.toml"))
+        if not found:
+            empty.append(f"{p} holds no requests, so nothing there was checked.")
+        files.extend(found)
+    return files, empty
+
+
+def _describe(request) -> str:
+    n = len(request.invitees)
+    return (f"owner {request.owner.email}, {n} invitee{'' if n == 1 else 's'}, "
+            f"${request.max_budget_usd:.2f}, {request.max_turns} turns")
+
+
+def _check_request_command(args: argparse.Namespace) -> int:
+    """Check provisioning requests without applying anything.
+
+    The checker predates this command by a module and had no caller but pytest:
+    the admin holding a merged request had no way to run it, and the owner was
+    told to install the test dependencies to check their own file.
+    """
+    from ricardi import provision
+
+    taken, why = catalogue_names(args.agents)
+    if why:
+        print(f"not checking for collisions with existing agents: {why}")
+    names = list(taken)
+
+    files, empty = request_files(args.paths)
+    for line in empty:
+        print(line)
+
+    refused = 0
+    for path in files:
+        request, findings = provision.check(
+            path, existing_names=tuple(names), max_budget_usd=args.max_budget_usd
+        )
+        if findings:
+            refused += 1
+            for one in findings:
+                print(f"REFUSED {path}: {one}")
+            continue
+        # Held against the files after it, so two requests in one pull request
+        # cannot both claim a name.
+        names.append(request.name)
+        print(f"ok      {path}: {request.name} -- {_describe(request)}")
+
+    if refused:
+        print(f"{refused} of {len(files)} request(s) refused.")
+        return 1
+    print(f"{len(files)} request(s) fit to review.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="ricardi", description=__doc__)
     here = Path(__file__).resolve().parents[2]
@@ -387,6 +475,31 @@ def main(argv: list[str] | None = None) -> int:
         one.add_argument("--name", required=True, help="agent name")
         one.add_argument("--verb", required=True)
         one.add_argument("--by", required=True, help="who is recording this")
+    # Accepted after the subcommand as well as before it, which is where people
+    # type it -- the same arrangement, and for the same reason, as
+    # `grants list --state-dir X`. SUPPRESS keeps the unset default from
+    # overwriting a value given before the subcommand.
+    catalogue = argparse.ArgumentParser(add_help=False)
+    catalogue.add_argument(
+        "--agents", default=argparse.SUPPRESS,
+        help="agent catalogue, read only for the names already taken",
+    )
+    asked = sub.add_parser(
+        "check-request",
+        parents=[catalogue],
+        help="check a provisioning request, or a directory of them, and apply "
+             "nothing",
+    )
+    asked.add_argument(
+        "paths", nargs="+",
+        help="request files, or directories of them (requests/ checks the lot)",
+    )
+    asked.add_argument(
+        "--max-budget-usd", type=float, default=0.0,
+        help="refuse a request asking for more than this. The admin's ceiling "
+             "is in no file, so it is given here; without it no ceiling is "
+             "applied at this step",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -399,6 +512,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "grants":
             return _grants_command(args)
+        if args.command == "check-request":
+            return _check_request_command(args)
         return asyncio.run(_serve(args))
     except (config.ConfigError, policy_mod.PolicyError, GrantError) as exc:
         print(f"ricardi: {exc}", file=sys.stderr)

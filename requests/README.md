@@ -24,12 +24,19 @@ this deployment is simple — see the note at the top of `compose.yaml`.
 2. Check it before anyone else has to:
 
    ```
-   pytest tests/test_provision.py -k every_request
+   ricardi check-request requests/<your-session>.toml
    ```
 
-3. Open a pull request. CI runs the same check, so syntax, tiers, duplicate
-   people, reserved names, collisions with existing sessions and missing git
-   usernames all come back to you before a human reads it.
+   Or `ricardi check-request requests` for the lot. It applies nothing and
+   reaches nothing: it reads your file, and reads `agents.toml` only for the
+   names already taken. On a clone with no `agents.toml` it says so and checks
+   everything else — only the collision with an existing session goes
+   unchecked there.
+
+3. Open a pull request. CI runs that same command over this directory, so
+   syntax, tiers, duplicate people, reserved names, collisions within the pull
+   request and missing git usernames all come back to you before a human reads
+   it.
 4. An admin reviews and merges. What CI cannot check is whether you should have
    it — that is what the review is for.
 
