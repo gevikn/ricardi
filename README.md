@@ -289,6 +289,20 @@ The real boundary is structural, and policy is the second line behind it:
 - Point `cwd` at nothing you'd mind losing, and nowhere near a `.env`.
 - Use the SDK's `sandbox` option rather than inventing one.
 
+### Reading it back
+
+`ricardi check` asserts properties of what you have configured rather than
+describing it: which allow rules name nobody, which reach outside the tree of
+the name that asks, which decide by argv shape — and, separately, whether the
+configured world hangs together at all, meaning names nothing can address,
+grants on names that do not exist, people off the roster, no usable credential.
+
+The second kind are defects and `--strict` exits non-zero on them, so a deploy
+can gate on it. The first kind are dial positions — the shipped example sits off
+the tightest setting on purpose — so they print and do not fail, unless you ask
+for `--strict-posture`. Read-only, and no credential's contents are read or
+printed. Details in [docs/running.md](docs/running.md).
+
 ## agents.toml
 
 The agents Slack can reach are declared, not discovered — a fixed list gives
