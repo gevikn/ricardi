@@ -371,10 +371,56 @@ id did not. Check that `state/sessions.json` exists and is being written, and
 that the working directory is where you think it is. A bot that replies and has
 forgotten the last hour looks exactly like one that is working.
 
+## Reading the configuration back: `ricardi check`
+
+Everything the paranoia dial can do is "you can write it correctly" rather than
+"it cannot be wrong". This is the readout. It changes nothing, reaches nothing
+off the box, and reads no credential's contents.
+
+```
+$ ricardi check
+posture -- is the dial where you think it is
+  allow-without-users  rule 'read anything under the worktrees' names no users, so it allows anyone the transport can carry.
+  allow-by-argv-shape  rule 'commands may be run' allows by argv shape, which is sound as a deny and unsound as an allow: the patterns are prefix-shaped.
+wholeness -- does the configured world hang together
+  name-without-grants  name 'utils' is in the catalogue and has no grant row, so nobody can address it. `ricardi grants add`, or `grants seed` for what policy.toml already permits.
+2 posture note(s), 1 wholeness finding(s).
+```
+
+Two families, and the difference between them is the whole design:
+
+- **posture** — *is the dial where you think it is.* Dial positions, not
+  defects. Every one of them is a legitimate thing to mean, and the shipped
+  example sits off the tightest setting on purpose: it allows commands by argv
+  shape, and points one read rule at the directory above every checkout.
+- **wholeness** — *does the configured world hang together.* Defects: a name
+  with no grant row that nobody can address, a grant on a name the catalogue
+  does not declare, a rule naming an agent that does not exist, an owner or a
+  grant-holder who is not on the roster, no usable credential.
+
+`--strict` exits non-zero on a wholeness finding, so a deploy can gate on it.
+Posture notes do **not** fail it — a gate that fails on a correct configuration
+is a gate that gets deleted within a week. Neither does an inert roster
+identity: somebody added before anyone grants them anything is in the correct
+state, and it is counted separately as a note.
+
+`--strict-posture` fails on posture notes as well, for a dial that has been
+decided and should stay put. Expect to silence nothing: there is no
+acknowledgement file, so a note you have accepted stays printed.
+
+An assertion that could not run is reported under `not checked:` and fails
+`--strict` too — "we could not look" is not a yes. That covers a catalogue or
+policy that will not load (the loaders' own refusals are the finding) and a
+grant store that will not open, which skips the four assertions that read it
+rather than reporting an empty store.
+
+`--agents`, `--policy` and `--state-dir` work on either side of the subcommand.
+
 ## Watching it
 
 - `python -m ricardi.report` — every decision, counted, refusals grouped by the
   rule that caused them. Reads rotated generations too.
+- `ricardi check` — the configuration, read back. The section above.
 - `docker compose logs -f`, `journalctl --user -u ricardi -f`, or
   `Get-Content -Wait state\service.log` — connection, agents, policy errors.
   The first line names the transport, the agents, and how many rules loaded,
