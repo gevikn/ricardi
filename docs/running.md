@@ -123,6 +123,52 @@ hands its whole environment to the CLI it spawns, so that is the entire wiring.
 `/Library/LaunchDaemons` is world-readable, unit files usually are, and a
 command line shows up in the process list.
 
+### Rotating it without a shell on the box
+
+Living in `.env` is right and it has one consequence: `.env` is the file no
+deploy may replace, so for a while rotating the key meant an interactive
+session on the host. That is the wrong dependency for a machine behind a home
+router — the day a credential dies is a likely day for the tunnel to be down
+too, and both failures look like silence in Slack.
+
+`.github/workflows/rotate-credential.yml` does it over the same self-hosted
+runner the deploy uses, which dials out:
+
+```bash
+gh secret set ANTHROPIC_API_KEY -R <owner>/<repo>    # paste the new key
+gh workflow run rotate-credential.yml && gh run watch
+```
+
+It will not mint the key. Create the new one in the Anthropic Console, rotate,
+then revoke the old one once Slack answers — the workflow never sees the key
+being replaced.
+
+What it does, in order, and why each step is there rather than at the end:
+
+| | |
+| :- | :- |
+| **asks the API** whether the new key authenticates | a key that does not work should be a failed workflow with the box still serving, not a restart into silence |
+| **refuses a configuration this key cannot win** | `CLAUDE_CODE_OAUTH_TOKEN` also set, or a stored login in the mounted config directory, means the rotation would change nothing — and a shadowed credential looks exactly like a wrong one |
+| **rewrites one line**, keeping `.env.bak` | the Slack tokens are in that file too |
+| **recreates the container** with `--force-recreate` | compose will not reliably notice that an `env_file` changed, and a rotation that kept the old process is the failure this exists to prevent |
+| **compares what the running process holds** against what was written, by digest | readiness is not proof: a container with a dead key connects to Slack perfectly and only fails on the first turn |
+
+On any failure after the rewrite it restores `.env.bak` and restarts. The key
+is never printed, and neither is either digest.
+
+**Why this is the only secret the repository holds.** A public repository with
+no secrets cannot leak one, and that was worth something. Two structural rules
+replace it, both asserted by `tests/test_workflow_trust.py` on every run: a
+workflow that names one of the box's credentials triggers on
+`workflow_dispatch` and nothing else, so the credential only ever reaches the
+runner because someone with write access pressed a button; and the secret
+travels in `env:`, never interpolated into a `run:` body, because `${{ }}` is
+substituted before the shell exists and would bake the value into the script
+on disk.
+
+The same workflow shape fits the Slack tokens, which have the same problem and
+are covered by the same two rules.
+
 ## Docker
 
 The shortest path on Linux, and the only one where the agent's reach is
