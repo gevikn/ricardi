@@ -11,113 +11,43 @@ So these tests execute the steps exactly as shipped: the YAML is parsed, the
 leaves behind is read back. Nothing is retyped here, which is the point -- a
 copy of the script would pass while the shipped one rotted.
 
-Docker is never reached: the steps under test are the ones before it.
+Docker is stubbed, the way `test_deploy_health_runs.py` stubs it, so the step
+that reads the key back out of the running container is tested here rather
+than first on the box.
 """
 
-import shlex
-import tempfile
-import shutil
-import subprocess
+import hashlib
+import os
 from pathlib import Path
 
 import pytest
-import yaml
-
-WORKFLOW = (
-    Path(__file__).resolve().parent.parent
-    / ".github"
-    / "workflows"
-    / "rotate-credential.yml"
-)
+from workflow_shell import posix_path, run_step, step_script, unusable_shell
 
 REFUSE = "Refuse a configuration this key cannot win"
 WRITE = "Write it, keeping a way back"
+HEALTH = "Is it up, and is it holding the new key"
 
-def _usable_shell() -> str:
-    """Why these tests cannot run here, or "" when they can.
-
-    Probed rather than assumed. `which bash` says a shell exists, which is a
-    different claim from "a shell this process starts can read a directory
-    this process just made" -- and that is the claim every test here rests
-    on. Sandboxes that give a child process its own filesystem view answer
-    the first question yes and the second no, and the failure arrives as
-    twenty puzzling red tests rather than one honest skip.
-    """
-    for tool in ("bash", "awk"):
-        if shutil.which(tool) is None:
-            return f"no {tool} on this platform"
-    with tempfile.TemporaryDirectory() as box:
-        probe = f'cd "{Path(box).as_posix()}" && printf reached > marker\n'
-        try:
-            subprocess.run(
-                ["bash", "-s"], input=probe.encode("utf-8"), capture_output=True
-            )
-            if (Path(box) / "marker").read_text(encoding="utf-8") == "reached":
-                return ""
-        except OSError:
-            pass
-    return "a bash child of this process cannot reach this process's files"
+# awk because the rewrite is an awk program -- the one place a wrong answer
+# corrupts a credential rather than failing a workflow -- and jq, date and
+# sha256sum because the health step is the deploy's readiness check plus a
+# digest comparison.
+pytestmark = pytest.mark.skipif(
+    bool(unusable_shell("awk", "jq", "date", "sha256sum")),
+    reason=unusable_shell("awk", "jq", "date", "sha256sum") or "shell is usable",
+)
 
 
-UNUSABLE = _usable_shell()
-pytestmark = pytest.mark.skipif(bool(UNUSABLE), reason=UNUSABLE or "shell is usable")
-
-
-def _script(step_name: str) -> str:
-    """The shipped `run:` body for one step, by name.
-
-    Named lookup rather than an index: a step inserted above this one must not
-    silently move the test onto a different script. A rename fails here, which
-    is the correct amount of noise for renaming the thing under test.
-    """
-    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
-    steps = workflow["jobs"]["rotate"]["steps"]
-    for step in steps:
-        if step.get("name") == step_name:
-            return step["run"]
-    raise AssertionError(
-        f"no step named {step_name!r} in {WORKFLOW.name}; "
-        f"found {[s.get('name') for s in steps]}"
-    )
-
-
-def _posix(path: Path) -> str:
-    """A path this shell can actually reach.
-
-    Git Bash on Windows is a POSIX shell holding a Windows path: backslashes
-    are escape characters to it, so `C:\\Users\\...` arrives with the
-    separators eaten. Forward slashes are understood on both platforms.
-    """
-    return str(path).replace("\\", "/")
-
-
-def _run(step_name: str, box: Path, **env: str) -> subprocess.CompletedProcess:
+def _run(step_name: str, box: Path, **env: str):
     """Run one shipped step with the inputs the runner would give it."""
-    inputs = {"DEPLOY_DIR": _posix(box), "GITHUB_OUTPUT": _posix(box / "gh-output")}
+    inputs = {
+        "DEPLOY_DIR": posix_path(box),
+        "GITHUB_OUTPUT": posix_path(box / "gh-output"),
+    }
     inputs.update(env)
-    # Exported by a prelude on stdin rather than passed as a subprocess
-    # environment. Both reach the script as environment variables, which is
-    # what `awk`'s ENVIRON and every `$VAR` here read; the prelude also works
-    # under a sandbox that refuses to hand a child a custom environment.
-    prelude = "".join(
-        f"export {name}={shlex.quote(value)}\n" for name, value in inputs.items()
-    )
-    # The script goes in on stdin rather than as a file, so there is no second
-    # path for the shell to misread -- and nothing left on disk afterwards.
-    #
-    # Bytes, not text=True: text mode rewrites every \n on the way in to the
-    # platform's line ending, and a shell handed `set -euo pipefail\r` reports
-    # an invalid option name -- which looks exactly like a broken script.
-    done = subprocess.run(
-        ["bash", "-s"],
-        input=(prelude + _script(step_name)).encode("utf-8"),
-        capture_output=True,
-    )
-    return subprocess.CompletedProcess(
-        done.args,
-        done.returncode,
-        done.stdout.decode("utf-8", "replace"),
-        done.stderr.decode("utf-8", "replace"),
+    return run_step(
+        step_script("rotate-credential.yml", "rotate", name=step_name),
+        at=box,
+        env=inputs,
     )
 
 
@@ -278,3 +208,119 @@ def test_the_key_is_never_printed_by_the_step_that_writes_it(box: Path):
     # this one is public.
     done = _run(WRITE, box, NEW_KEY="sk-ant-do-not-print-me")
     assert "do-not-print-me" not in done.stdout + done.stderr
+
+
+# --------------------------------------------------------------------------
+# The health step: readiness, and then the question readiness cannot answer.
+
+# Its own stub rather than the deploy's: this is the only step in either
+# workflow that calls `docker compose exec`, and what that returns is the
+# thing under test.
+DOCKER_STUB = """#!/bin/sh
+if [ "$1" = "compose" ] && [ "$2" = "ps" ] && [ "$3" = "-q" ]; then
+  if [ -n "$FAKE_CID" ]; then echo "$FAKE_CID"; fi
+  exit 0
+fi
+if [ "$1" = "inspect" ]; then echo "$FAKE_STARTED"; exit 0; fi
+if [ "$1" = "compose" ] && [ "$2" = "ps" ] && [ "$3" = "--format" ]; then
+  echo "ricardi $FAKE_STATE"; exit 0
+fi
+if [ "$1" = "compose" ] && [ "$2" = "exec" ]; then
+  printf %s "$FAKE_CONTAINER_KEY" | sha256sum; exit 0
+fi
+if [ "$1" = "compose" ] && [ "$2" = "logs" ]; then echo "(stub log)"; exit 0; fi
+exit 0
+"""
+
+STARTED = "2026-11-08T19:50:55.580681197Z"
+
+
+def _marker(stamp: str) -> str:
+    return '{"ready": true, "connected_at": "%s", "agents": ["ricardi"]}' % stamp
+
+
+def _run_health(
+    box: Path,
+    *,
+    key: str = "sk-ant-new",
+    in_container: str | None = None,
+    marker: str | None = _marker("2026-11-08T19:50:57Z"),
+    state: str = "running",
+    cid: str = "c0ffee",
+):
+    """Run the shipped health step. `in_container` defaults to `key`."""
+    binaries = box / "bin"
+    binaries.mkdir()
+    (binaries / "docker").write_text(DOCKER_STUB, encoding="utf-8")
+    # Stubbed so the thirty-poll loop finishes at once.
+    (binaries / "sleep").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    for stub in binaries.iterdir():
+        stub.chmod(0o755)
+
+    (box / "state").mkdir()
+    if marker is not None:
+        (box / "state" / "ready.json").write_text(marker, encoding="utf-8")
+
+    return _run(
+        HEALTH,
+        box,
+        PATH=str(binaries) + os.pathsep + os.environ["PATH"],
+        NEW_KEY=key,
+        FAKE_CID=cid,
+        FAKE_STARTED=STARTED,
+        FAKE_STATE=state,
+        FAKE_CONTAINER_KEY=key if in_container is None else in_container,
+    )
+
+
+def test_a_container_holding_the_key_we_wrote_passes(box: Path):
+    done = _run_health(box)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "holds the new key" in done.stdout
+    assert "ok=yes" in (box / "gh-output").read_text(encoding="utf-8")
+
+
+def test_a_container_holding_a_different_key_fails(box: Path):
+    # What a container that was never really recreated looks like -- and the
+    # reason --force-recreate is not trusted to have worked.
+    done = _run_health(box, key="sk-ant-new", in_container="sk-ant-old")
+    assert done.returncode != 0
+    assert "not holding the key we just wrote" in done.stdout
+
+
+def test_a_container_holding_nothing_fails(box: Path):
+    # An env_file that did not reach the process at all.
+    done = _run_health(box, in_container="")
+    assert done.returncode != 0
+
+
+def test_a_marker_from_a_previous_boot_fails_before_the_key_is_compared(box: Path):
+    # The same staleness the deploy gate refuses: a ready.json left by the
+    # container this one replaced says nothing about this one.
+    done = _run_health(box, marker=_marker("2026-11-01T10:00:00Z"))
+    assert done.returncode != 0
+    assert "readiness marker" in done.stdout
+
+
+def test_no_marker_at_all_fails(box: Path):
+    assert _run_health(box, marker=None).returncode != 0
+
+
+def test_a_container_that_is_not_running_fails(box: Path):
+    assert _run_health(box, state="restarting").returncode != 0
+
+
+def test_no_container_at_all_fails(box: Path):
+    done = _run_health(box, cid="")
+    assert done.returncode != 0
+    assert "No ricardi container" in done.stdout
+
+
+def test_neither_the_key_nor_its_digest_reaches_the_log(box: Path):
+    # The comparison is the whole point of the step, and a digest printed to
+    # a public repository's log lets someone confirm a guessed key.
+    key = "sk-ant-do-not-print-me"
+    done = _run_health(box, key=key)
+    output = done.stdout + done.stderr
+    assert "do-not-print-me" not in output
+    assert hashlib.sha256(key.encode()).hexdigest() not in output
