@@ -11,6 +11,10 @@ Revised after a builder check, which found that the first version
 under-specified almost everything where the event model meets existing code.
 §16 records what changed.
 
+**Amended 2026-11-08, see §18:** the clients' stack is decided. Textual is
+rejected on evidence from a sibling project, both clients are TypeScript, and
+the terminal client appends to the terminal rather than taking the screen.
+
 ---
 
 ## 1. Intent
@@ -117,6 +121,9 @@ both clients are rewritten — the anti-goal below.
 - **Owning auth.** See §6.
 - **Two divergent clients**, which means the event model was wrong.
 - **An archive of other people's conversations** nobody decided to keep (§7).
+- **A client that decides anything.** Policy is one engine with an audit row per
+  decision. A renderer that pre-filters what the server would have allowed is a
+  second policy engine nobody tested (§18).
 
 ---
 
@@ -277,8 +284,9 @@ the sibling design rejected in §11.
 Built second, because its value is proving the model generalises. If the TUI is
 hard, the event model is wrong — cheaper to learn second than first.
 
-**Left to the builder:** language, framework, and whether it ships inside the
-Python package or beside it.
+**Decided 2026-11-08 (§18):** TypeScript on Ink, appending to the terminal
+rather than taking the screen, shipped **beside** the Python package — it is a
+client of an HTTP stream, not a part of the server.
 
 ---
 
@@ -371,13 +379,15 @@ model change *there*, not here.
 Then:
 
 1. **The event vocabulary**, in its own module depended on by both seams.
-   Nothing else starts first.
+   Nothing else starts first. Its deliverable is a **documented JSON wire schema
+   with tests of its own**, because a TypeScript client consumes it (§18).
 2. **Widen `backends/base.py` and `sdk.py`** to emit tool calls, outcomes,
    diffs and streamed text. Live-run obligation applies.
 3. **Replace `Transport.send(text)` with `emit(event)`**, rewriting `slack.py`
    and `local.py` as renderers.
 4. **`transports/http.py`** — per-name streams, bounded replay, input endpoint.
 5. **The browser client, read-only.** Watch mode is the smallest useful thing.
+   React + Vite, built to a static bundle `transports/http.py` serves (§18).
 6. **Access in front of it** — second hostname, second application, JWT
    verified; `watch` as an audited action.
 7. **The write path**, tier-checked against the real tiers from the
@@ -405,6 +415,17 @@ Browser projection (§11) does not enter this list until §12 is answered.
 - The browser client is built before the TUI (§9).
 - Browser projection is **gated** on the tier gap, not sequenced after it (§12).
 - README and `comparison.md` are left stale rather than rewritten now (§13).
+
+Added 2026-11-08, from §18. The owner rejected Textual, ruled out
+`textual serve`, asked for a real browser app and offered Rust; everything below
+is mine:
+
+- The terminal client appends and never takes the alternate screen.
+- Both clients are TypeScript, so the vocabulary is a wire schema first.
+- Ink for the terminal, React + Vite for the browser.
+- The TUI ships beside the Python package rather than inside it.
+- Rust is declined, with the condition that would reverse it recorded (§18).
+- No client makes a policy decision (§4).
 
 ---
 
@@ -445,3 +466,122 @@ above. What materially changed:
    expensive to get wrong.
 3. **Does `watch` as a plane-2 action belong in this design or the sibling's
    grant store?** It is a grant, and the grant store is a prerequisite.
+
+---
+
+## 18. The clients' stack — decided 2026-11-08
+
+§9 left language and framework to the builder. This settles them, from evidence
+rather than taste.
+
+### The evidence: kittychat
+
+`~/projects/kittychat` is a working Textual application — a 772-line
+`tui/app.py`, its own widget set, streaming, approval modals, native selection,
+an animated cat. The owner's verdict after building it is that Textual is the
+wrong tool, and that project's own documents record why in six places — paths
+below are relative to `~/projects/kittychat`:
+
+| What happened | Where |
+| :- | :- |
+| Textual's `Markdown` widget *and* Rich's `Markdown` renderable were both rejected — they "recolor away from cyan and complicate selection" — so markdown became a hand-written converter applied once at stream end | `docs/superpowers/specs/2026-06-24-tui-markdown-design.md` |
+| Mouse-copy returns rendered text, so every message carries `.plain` with the raw markdown beside it | `src/kittychat/tui/widgets/output_display.py` |
+| The app has to explain to the user that Ctrl+C means copy here, not quit | `src/kittychat/tui/app.py:765` |
+| `scroll_end` during mount runs before layout, so a resumed session opens on a stale position until it is deferred a frame | `src/kittychat/tui/app.py:250` |
+| Textual 0.47 → 8.2.7 was "too far to copy the old widgets": a rebuild against a parity contract, every widget task ending in "run + adapt to installed Textual" | `docs/REARCHITECTURE.md`, `docs/superpowers/plans/2026-06-20-phase-1b-tui-port.md` |
+| "Textual owns its event loop (sync); not inside `asyncio.run`" | `docs/superpowers/plans/2026-06-20-phase-1b-tui-port.md` |
+
+These are not six unrelated bugs. **Textual takes the alternate screen, and so
+it owns scrollback, selection, copy, wrapping and theming** — all things the
+terminal already does. Reimplementing them is most of that list.
+
+### Decided: the terminal client appends
+
+It manages the input line and the in-flight turn. Everything finished scrolls
+into the terminal's own buffer, where scrollback, selection and copy already
+work and Ctrl+C still means what the user expects.
+
+This decision matters more than the language, because it removes the whole
+category the table above is full of. It costs full-screen panes, which a client
+whose job is "read the transcript, type into it" does not want.
+
+### Decided: TypeScript for both clients
+
+A real browser app puts a TypeScript toolchain in this repository whichever way
+the terminal client goes. Once it is there:
+
+- **Ink** for the terminal. Its `<Static>` is append-mode as a first-class
+  primitive, and React's model fits "events arrive, re-render".
+- **React + Vite** for the browser, built to a static bundle that
+  `transports/http.py` serves. No second server and no published port, so §6's
+  compose-network decision survives intact.
+- **One copy of the wire types, one SSE client, one diff renderer, one collapse
+  rule**, shared by both. §4's anti-goal is two divergent clients; two languages
+  is how that happens without anyone deciding it.
+
+**Consequence for build step 1.** A TypeScript consumer means the event
+vocabulary's deliverable is a **documented JSON wire schema with tests of its
+own**, not a module of Python dataclasses whose serialisation is whatever
+`asdict` happened to produce. The Python types become one binding of the schema
+rather than the definition of it.
+
+### Why not Rust
+
+The owner offered it. It loses here for a reason specific to this shape: a Rust
+terminal client shares nothing with the browser app — three toolchains for two
+clients — and ratatui is immediate-mode, so wrapping and scrollback become ours
+again, which is the kittychat trap with better types.
+
+**The condition that would reverse this:** a terminal client that is the
+*primary* interface and wants dense multi-pane redraw. §9 makes this the second
+client, built to prove the event model generalises.
+
+**The cost of the TypeScript decision, stated now rather than discovered later:**
+a Node build and test culture in a repository whose CI is Python-only, and a
+workflow trust guard that now covers two toolchains. Worth paying once, for the
+browser app. Not twice.
+
+### Explicitly not `textual serve`
+
+Textual can serve a terminal app in a browser. That is a terminal in a page, and
+§1's argument is that the non-terminal half of the pair needs a page. It would
+also reintroduce the server and auth surface §6 spent its decisions on.
+
+### What to lift from kittychat, and what it is missing
+
+kittychat's `src/kittychat/agent/types.py::AgentSink` is the right instinct,
+already proven through a real UI:
+`on_text`, `on_thinking`, `on_tool_start`, `on_tool_output`, `on_tool_result`,
+`on_error`, with a `RecordingSink` double that records `(kind, payload)` tuples.
+It is also a map of the gap, because §7 needs five things it has no room for: a
+sequence number, turn boundaries, a diff event, the `Decision`, and a
+correlation id for the answerable kind.
+
+Worth lifting as lessons rather than as code:
+
+- **Stream plain, style once at the end.** Mid-stream markdown parsing flickers
+  on broken partials. True of HTML too.
+- **Keep the raw text beside the rendered text**, so copy and export stay
+  lossless.
+- **Live-then-collapse** tool blocks: expanded while running, one line when
+  done.
+- The **approval modal** is §7's answerable event wearing different clothes.
+
+The owner's standing permission is to lift freely; kittychat is the owner's own
+project.
+
+### One invariant for both clients
+
+**A client renders decisions and never makes one.** Policy is one engine in
+`policy.py` with an audit row per decision. A renderer that pre-filters what the
+server would have allowed is a second policy engine, written in a language the
+policy tests do not run in, that nobody can watch refusing anything.
+
+### Still left to the builder
+
+- Which SSE client, which bundler plugins, which test runner on the TypeScript
+  side.
+- Whether the terminal client ships as an npm entry point or a compiled binary.
+  It only matters when someone needs it on a machine with no Node.
+- The browser's component structure, and whether the two clients share one
+  package or two directories.
