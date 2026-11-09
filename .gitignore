@@ -1,5 +1,9 @@
 .venv/
 .env
+# rotate-credential.yml keeps the previous file as the way back, and writes
+# the new one beside it before the rename. Both hold a live credential.
+.env.bak
+.env.next
 __pycache__/
 *.pyc
 .pytest_cache/

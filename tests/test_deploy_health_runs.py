@@ -9,24 +9,15 @@ assert on what it decides.
 """
 
 import os
-import shutil
-import subprocess
-from pathlib import Path
 
 import pytest
-import yaml
+from workflow_shell import posix_path, run_step, step_script, unusable_shell
 
-DEPLOY = Path(__file__).resolve().parent.parent / ".github" / "workflows" / "deploy.yml"
-
-# Posix only, like test_install_posix.py. The script runs on the Linux box
-# and on the ubuntu CI job; a Windows developer's Git Bash cannot reach a
-# script under AppData from a spawned subprocess, and a half-working harness
-# that exits non-zero for its own reasons would pass every "this must fail"
-# test without running anything.
+# Posix only, like test_install_posix.py -- `workflow_shell.unusable_shell`
+# explains why, and `rotate-credential`'s tests rest on the same answer.
 pytestmark = pytest.mark.skipif(
-    os.name != "posix"
-    or not (shutil.which("bash") and shutil.which("jq") and shutil.which("date")),
-    reason="needs posix with bash, jq and GNU date -- what the deploy runs on",
+    bool(unusable_shell("jq", "date")),
+    reason=unusable_shell("jq", "date") or "shell is usable",
 )
 
 DOCKER_STUB = """#!/bin/sh
@@ -42,27 +33,6 @@ if [ "$1" = "compose" ] && [ "$2" = "ps" ]; then echo "NAME ricardi"; exit 0; fi
 if [ "$1" = "compose" ] && [ "$2" = "logs" ]; then echo "(stub log)"; exit 0; fi
 exit 0
 """
-
-
-def _posix(path) -> str:
-    """A path bash will accept, on the runner and on a developer's Windows.
-
-    Git Bash does not understand C:\dir; it wants /c/dir. Without this the
-    script is "not found", bash exits non-zero, and every test that asserts a
-    non-zero exit passes without having run anything.
-    """
-    text = Path(path).as_posix()
-    if os.name == "nt" and len(text) > 1 and text[1] == ":":
-        return "/" + text[0].lower() + text[2:]
-    return text
-
-
-def _script() -> str:
-    workflow = yaml.safe_load(DEPLOY.read_text(encoding="utf-8"))
-    for step in workflow["jobs"]["deploy"]["steps"]:
-        if step.get("id") == "health":
-            return step["run"]
-    raise AssertionError("the deploy has no step with id 'health'")
 
 
 def run_gate(
@@ -86,25 +56,18 @@ def run_gate(
     if marker is not None:
         (deploy_dir / "state" / "ready.json").write_text(marker, encoding="utf-8")
 
-    script = tmp_path / "health.sh"
-    script.write_text(_script(), encoding="utf-8")
-
-    env = dict(os.environ)
-    env.update(
-        PATH=str(binaries) + os.pathsep + env["PATH"],
-        DEPLOY_DIR=_posix(deploy_dir),
-        GITHUB_OUTPUT=_posix(tmp_path / "github_output"),
-        FAKE_CID=cid,
-        FAKE_STARTED=started,
-        FAKE_STATE=state,
+    return run_step(
+        step_script("deploy.yml", "deploy", step_id="health"),
+        at=tmp_path,
+        env={
+            "PATH": str(binaries) + os.pathsep + os.environ["PATH"],
+            "DEPLOY_DIR": posix_path(deploy_dir),
+            "GITHUB_OUTPUT": posix_path(tmp_path / "github_output"),
+            "FAKE_CID": cid,
+            "FAKE_STARTED": started,
+            "FAKE_STATE": state,
+        },
     )
-    done = subprocess.run(
-        ["bash", _posix(script)], env=env, capture_output=True, text=True, timeout=120
-    )
-    # A harness that cannot start the script would hand every "this must
-    # fail" test a non-zero exit for the wrong reason.
-    assert "No such file or directory" not in done.stderr, done.stderr
-    return done
 
 
 def marker_at(stamp):
