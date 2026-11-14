@@ -371,6 +371,77 @@ async def test_a_deny_can_use_the_alias_too():
         assert (await pol.decide(tool(name, command="git push"))).allow is False, name
 
 
+# The examples name the verbs they allow, and a pattern is matched against the
+# whole command string -- so `git log*` is anchored at the start and covers
+# nothing that puts a global flag before the verb. An agent that cannot be sure
+# of its working directory writes `git -C <path> log`, which read as "git log
+# is forbidden" in a policy whose own list says it is allowed. Found in this
+# box's audit log after the refusal reached Slack, not by reading the file.
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git -C /workspace/ricardi log --oneline -n 15",
+        "git -C /workspace/ricardi status --short",
+        "git -C /workspace/ricardi diff --stat",
+    ],
+)
+@pytest.mark.parametrize(
+    "policy_file,agent",
+    [("policy.example.toml", "shared"), ("docker/policy.example.toml", "ricardi")],
+)
+def test_neither_example_forbids_reading_git_from_outside_the_cwd(
+    policy_file, agent, command
+):
+    import asyncio
+
+    pol = P.load(policy_file)
+    req = P.Request(
+        action="tool",
+        principal=P.Principal(id="U00000000000", email="you@example.com", known=True),
+        resource=P.Resource(channel_id="C00000000000"),
+        agent=agent,
+        tool="Bash",
+        tool_input={"command": command},
+    )
+    assert asyncio.run(pol.decide(req)).allow is True, command
+
+
+@pytest.mark.parametrize(
+    "policy_file,agent",
+    [("policy.example.toml", "shared"), ("docker/policy.example.toml", "ricardi")],
+)
+def test_the_git_c_form_does_not_become_a_way_to_change_the_checkout(
+    policy_file, agent
+):
+    """The -C patterns name read-only verbs, so they must not admit the rest.
+
+    A blanket `git -C *` would have been one line instead of three, and would
+    also have allowed commit, checkout and rebase -- none of which the deny
+    list below it covers, because nothing there needed to.
+    """
+    import asyncio
+
+    pol = P.load(policy_file)
+
+    def req(command):
+        return P.Request(
+            action="tool",
+            principal=P.Principal(id="U00000000000", email="you@example.com", known=True),
+            resource=P.Resource(channel_id="C00000000000"),
+            agent=agent,
+            tool="Bash",
+            tool_input={"command": command},
+        )
+
+    for command in (
+        "git -C /workspace/ricardi commit -am wip",
+        "git -C /workspace/ricardi checkout main",
+        "git -C /workspace/ricardi rebase origin/main",
+        "git -C /workspace/ricardi push origin main",
+    ):
+        assert asyncio.run(pol.decide(req(command))).allow is False, command
+
+
 def test_the_shipped_example_uses_the_alias_not_a_platform_name():
     # The example is what people copy; a copied rule naming one shell is the
     # trap this alias exists to close.
