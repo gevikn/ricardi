@@ -51,3 +51,28 @@ async def test_an_unbound_turn_has_nowhere_to_go_again():
 
 def test_the_slack_transport_is_a_transport():
     assert isinstance(SlackTransport("xoxb-x", "xapp-x"), Transport)
+
+
+def test_a_transport_that_only_emits_events_is_not_enough():
+    """`send` is still required, because `cli.py` still calls it.
+
+    The credential watch posts to a channel root, and it fires precisely when
+    turns are not happening, so it has no turn id to route an event by. A
+    Protocol that listed only the event methods would be understating what the
+    app needs: a transport written against it would satisfy `isinstance` and
+    then raise AttributeError inside the one path whose whole job is to report
+    that something is broken.
+    """
+
+    class Eventful:
+        async def start(self, on_message): ...
+
+        def bind(self, turn, channel, thread): ...
+
+        def unbind(self, turn): ...
+
+        async def emit(self, event): ...
+
+        async def close(self): ...
+
+    assert not isinstance(Eventful(), Transport)

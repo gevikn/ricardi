@@ -58,4 +58,23 @@ class Transport(Protocol):
         """Show an event, or not: each transport renders what it can."""
         ...
 
+    async def send(self, channel: str, thread: str, text: str) -> None:
+        """Say something with no turn behind it.
+
+        Everything a turn produces goes through `emit`, and this would have
+        gone with it -- except for the credential watch in `cli.py`, which
+        fires on a timer precisely when turns are not happening. It has no turn
+        id, so there is nothing for `bind` to have routed, and routing it
+        through an event would mean inventing one for a message that belongs to
+        no conversation. Leaving it off the Protocol would not remove the call;
+        it would only hide it, until a transport written against this raised
+        AttributeError inside the path whose job is to report that something is
+        broken.
+
+        `send_private` is deliberately *not* here. It is an optional
+        capability, reached by `getattr` in `app.py`, and a transport with no
+        way to speak to one person alone is still a transport.
+        """
+        ...
+
     async def close(self) -> None: ...
