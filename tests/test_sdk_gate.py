@@ -161,7 +161,7 @@ needs_sdk = pytest.mark.skipif(
 
 @needs_sdk
 async def test_a_refusal_and_the_turns_own_events_share_the_callers_turn():
-    from tests.test_sdk_backend import Replaying, finished, said
+    from test_sdk_backend import Replaying, finished, said
 
     recorder = Recorder()
     backend = Replaying([AgentSpec(name="scout", cwd=".")], [said("hi"), finished()],
