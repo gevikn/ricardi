@@ -189,28 +189,25 @@ async def test_a_real_agent_is_stopped_from_running_what_policy_forbids(scratch)
         await backend.close()
 
 
-async def test_a_real_agent_may_run_what_policy_permits_and_it_is_announced(scratch):
-    """A permitted command runs, and the channel is told before it does.
+async def test_a_real_agent_may_run_what_policy_permits(scratch):
+    """A permitted command actually runs.
+
+    The positive control for the gate: without it, a gate that denied
+    everything would pass every other live test in this file.
 
     The command has to be one the model cannot answer from memory, or it will
     simply say the answer without ever calling a tool -- which is what an
     earlier version of this test accidentally measured. Reading is not
     permitted here, so the shell is the only way to the marker file.
     """
-    said: list[str] = []
-
-    async def notice(line):
-        said.append(line)
-
     policy = RulesPolicy([
         # Both names: the shell is Bash on unix and PowerShell on Windows.
-        Rule(effect="allow", tools=["Bash", "PowerShell"], obligations=["announce"]),
+        Rule(effect="allow", tools=["Bash", "PowerShell"]),
     ])
     backend = SdkBackend([spec(scratch)], turn_timeout=180, policy=policy)
     try:
         caller = Caller(
             principal=Principal(id="U1", email="you@example.com", known=True),
-            notice=notice,
         )
         answer = await backend.ask(
             "scout",
@@ -218,10 +215,6 @@ async def test_a_real_agent_may_run_what_policy_permits_and_it_is_announced(scra
             caller,
         )
         assert MARKER in answer, answer
-        assert said, "a permitted command ran without the channel being told"
-        assert any("marker" in line.lower() for line in said), said
-        # Announced as a tool call, not as prose.
-        assert all(line.split(":")[0] in {"Bash", "PowerShell"} for line in said), said
     finally:
         await backend.close()
 

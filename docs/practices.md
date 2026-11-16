@@ -117,10 +117,26 @@ other routes to the same place.
 Say so in the system prompt too: *if something is not permitted, say so and stop
 rather than looking for another way around*.
 
-## Do not stream progress into the channel
+## The channel streams a turn now, and what it leaves out is the point
 
-It reads well in a demo and is noise in a real channel. The announced commands
-are the useful signal; everything else belongs in the log.
+This section used to say *do not stream progress into the channel*. A turn is a
+stream of typed events now and the channel is one reader of it, so it does
+stream: each block the agent says as it says it, each tool call as it starts,
+and a sentence when a turn ends any way but normally. What it still leaves out
+is the part that was ever really noise — the agent's reasoning, the output a
+tool produced, and the arguments a call was made with, which never enter the
+stream at all.
+
+Two consequences, before you read a channel as a record of what happened. A
+command is posted **as it starts, not before it runs**: the announcement moved
+out of the tool gate, so nothing waits for Slack to accept the post before the
+CLI goes ahead. And an `announce` obligation no longer decides which calls the
+channel is told about, because every one of them is; `state/audit.jsonl`
+remains the durable record, refusals included.
+
+If it is too much for a real channel, `render.py` is the one place to say so —
+every transport reads it — and that is a far better place for the decision than
+a policy rule, which is about what may run rather than what is worth reading.
 
 ## The tools on offer differ by platform, so read-only is not read-only
 

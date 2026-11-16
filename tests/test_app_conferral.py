@@ -12,6 +12,8 @@ import logging
 
 import pytest
 
+from conftest import RendersEvents
+
 from ricardi import cli, readiness
 from ricardi import policy as P
 from ricardi.app import Ricardi
@@ -34,8 +36,9 @@ RULES = [
 ]
 
 
-class Recorder:
+class Recorder(RendersEvents):
     def __init__(self):
+        super().__init__()
         self.sent = []
 
     async def start(self, on_message):

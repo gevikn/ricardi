@@ -8,9 +8,10 @@ import logging
 
 from ricardi import router
 from ricardi.backends.base import AgentBackend, BackendError, Caller
+from ricardi.events import EventSink, Refused, Said, Stream, new_turn_id
 from ricardi.grants import GrantError, GrantStore
 from ricardi.health import CredentialWatch, classify, describe
-from ricardi.policy import TIERS, ClosedPolicy, PolicyPoint, Request, Resource
+from ricardi.policy import TIERS, ClosedPolicy, Decision, PolicyPoint, Request, Resource
 from ricardi.store import ThreadBindings
 from ricardi.transports.base import Inbound, Transport
 
@@ -27,6 +28,7 @@ class Ricardi:
         policy: PolicyPoint | None = None,
         grants: GrantStore | None = None,
         health: CredentialWatch | None = None,
+        sink: EventSink | None = None,
     ):
         self.transport = transport
         self.backend = backend
@@ -42,6 +44,11 @@ class Ricardi:
         # Slack. None means nobody is watching it.
         self.health = health
         self._watching: asyncio.Task[None] | None = None
+        # Where events go. The transport unless something else was named: it is
+        # the thing with a channel to show them in, and everything Ricardi says
+        # is an event now, so a sink that was not wired would be a mute bot.
+        self.sink: EventSink = sink if sink is not None else transport
+        self._streams: dict[str, Stream] = {}
 
     async def start(self) -> None:
         await self.transport.start(self.handle)
@@ -62,21 +69,37 @@ class Ricardi:
         await self.backend.close()
 
     async def handle(self, inbound: Inbound) -> None:
-        """Answer one message. Never raises: Slack gets words, not a traceback."""
+        """Answer one message. Never raises: Slack gets words, not a traceback.
+
+        One turn id is minted here and carried by every event this message
+        causes -- the agent's, the gate's refusals, and Ricardi's own words
+        about it. It is what a client ties them together by, and it is how a
+        transport knows which thread they belong in: messages are answered
+        concurrently, so an answer that found its way home by the agent's name
+        would land in whichever thread spoke to that agent most recently.
+        """
+        turn = new_turn_id()
         try:
-            await self._handle(inbound)
+            await self._handle(inbound, turn)
         except BackendError as exc:
-            await self._say(inbound, str(exc))
+            await self._emit(inbound, "ricardi", Said(text=str(exc)), turn)
             # The person has their error. The channel has not been told what
             # it means, and only this path knows.
             await self._turn_failed(exc)
         except Exception:
             log.exception("turn failed for thread %s", inbound.thread)
-            await self._say(
-                inbound, "Something broke on my side. The box's log has the detail."
+            await self._emit(
+                inbound, "ricardi",
+                Said(text="Something broke on my side. The box's log has the detail."),
+                turn,
             )
+        finally:
+            # Everything that could emit for this message has been awaited by
+            # now, so the route has no further use. Left behind, it would be a
+            # table that grows by one entry per message, forever.
+            self.transport.unbind(turn)
 
-    async def _handle(self, inbound: Inbound) -> None:
+    async def _handle(self, inbound: Inbound, turn: str) -> None:
         command = router.parse(inbound.text)
 
         if command.kind in {"help", "empty"}:
@@ -89,7 +112,7 @@ class Ricardi:
                 if only
                 else ""
             )
-            await self._say(inbound, router.HELP + extra)
+            await self._emit(inbound, "ricardi", Said(text=router.HELP + extra), turn)
             return
 
         if command.kind == "bad_flag":
@@ -100,38 +123,41 @@ class Ricardi:
                 inbound,
                 f"I don't know the flag `-{command.text}`, and I won't guess "
                 f"at a restriction. I understand {known}.",
+                turn,
             )
             return
 
         if command.kind == "list":
             # The catalogue names the agents and what they can touch, so it is
             # worth gating rather than handing to anyone who asks.
-            if not await self._permit(inbound, "list"):
+            if not (await self._permit(inbound, "list", turn=turn))[0]:
                 return
-            await self._say(inbound, await self._agent_list())
+            await self._emit(inbound, "ricardi", Said(text=await self._agent_list()), turn)
             return
 
         if command.kind == "who":
             bound = self.bindings.get(inbound.thread)
-            await self._say(
-                inbound,
-                f"This thread is talking to *{bound}*."
-                if bound
-                else "This thread is not talking to anyone yet. Try `list agents`.",
+            await self._emit(
+                inbound, "ricardi",
+                Said(text=f"This thread is talking to *{bound}*."
+                     if bound
+                     else "This thread is not talking to anyone yet. Try `list agents`."),
+                turn,
             )
             return
 
         if command.kind in {"bad_grant", "bad_revoke"}:
             shape = router.GRANT_SHAPE if command.kind == "bad_grant" else router.REVOKE_SHAPE
-            await self._say(
-                inbound,
-                f"I couldn't read that. The shape is {shape}, with the person "
-                "picked from Slack's mention list.",
+            await self._emit(
+                inbound, "ricardi",
+                Said(text=f"I couldn't read that. The shape is {shape}, with the "
+                          "person picked from Slack's mention list."),
+                turn,
             )
             return
 
         if command.kind in {"grant", "revoke"}:
-            await self._confer(inbound, command)
+            await self._confer(inbound, command, turn)
             return
 
         if command.kind == "tell":
@@ -148,35 +174,38 @@ class Ricardi:
                 text = command.raw
             # Decided before binding: a refused request must not leave the
             # thread quietly pointed at an agent it may not use.
-            if not await self._permit(inbound, "ask", agent):
+            if not (await self._permit(inbound, "ask", agent, turn=turn))[0]:
                 return
             self.bindings.bind(inbound.thread, agent, command.flags)
             if not text:
-                await self._say(
-                    inbound,
-                    f"This thread is talking to *{agent}* now. Say what you need.",
+                await self._emit(
+                    inbound, "ricardi",
+                    Said(text=f"This thread is talking to *{agent}* now. "
+                              "Say what you need."),
+                    turn,
                 )
                 return
-            await self._relay(inbound, agent, text)
+            await self._relay(inbound, agent, text, turn)
             return
 
         # A plain message continues whatever this thread was already doing,
         # or -- when there is only one agent to continue with -- starts it.
         bound = self.bindings.get(inbound.thread) or await self._only_agent()
         if not bound:
-            await self._say(
-                inbound,
-                "I don't know who that's for. Name an agent with "
-                "`tell <agent> <message>`.\n\n" + await self._agent_list(),
+            await self._emit(
+                inbound, "ricardi",
+                Said(text="I don't know who that's for. Name an agent with "
+                          "`tell <agent> <message>`.\n\n" + await self._agent_list()),
+                turn,
             )
             return
-        if not await self._permit(inbound, "ask", bound):
+        if not (await self._permit(inbound, "ask", bound, turn=turn))[0]:
             return
         # A reply may narrow the thread further; it can never widen it.
         self.bindings.bind(inbound.thread, bound, command.flags)
-        await self._relay(inbound, bound, command.text)
+        await self._relay(inbound, bound, command.text, turn)
 
-    async def _confer(self, inbound: Inbound, command: router.Command) -> None:
+    async def _confer(self, inbound: Inbound, command: router.Command, turn: str) -> None:
         """grant / revoke: ask `decide` first, write only if it allows.
 
         Nothing is decided here. The tier written is the one the command named,
@@ -185,14 +214,18 @@ class Ricardi:
         """
         action = command.kind
         person = self._email_for(command.user)
-        if not await self._permit(
-            inbound, action, command.agent, target=person, confers=command.tier
-        ):
+        allowed, _ = await self._permit(
+            inbound, action, command.agent, turn=turn, target=person,
+            confers=command.tier
+        )
+        if not allowed:
             return
         by = self._principal(inbound).email
         if self.grants is None:
-            await self._say(
-                inbound, f"I couldn't record that {action}: no grant store is open."
+            await self._emit(
+                inbound, "ricardi",
+                Said(text=f"I couldn't record that {action}: no grant store is open."),
+                turn,
             )
             return
         try:
@@ -200,9 +233,11 @@ class Ricardi:
         except BackendError:
             # Allowed, but there is nothing by that name to record against:
             # say so, so the channel does not read this as done.
-            await self._say(
-                inbound,
-                f"Nothing was recorded: I have no agent called *{command.agent}*.",
+            await self._emit(
+                inbound, "ricardi",
+                Said(text="Nothing was recorded: I have no agent called "
+                          f"*{command.agent}*."),
+                turn,
             )
             return
         try:
@@ -210,10 +245,12 @@ class Ricardi:
                 self.grants.add(
                     person=person, name=name, verb=command.tier, by=by, granted=True
                 )
-                await self._say(
-                    inbound,
-                    f"<@{command.user}> now holds *{command.tier}* on *{name}*. "
-                    "That records the tier; it does not add anyone to the channel.",
+                await self._emit(
+                    inbound, "ricardi",
+                    Said(text=f"<@{command.user}> now holds *{command.tier}* on "
+                              f"*{name}*. That records the tier; it does not add "
+                              "anyone to the channel."),
+                    turn,
                 )
                 return
             # Presence (`ask`) is left alone on purpose: removing someone from
@@ -227,21 +264,26 @@ class Ricardi:
                 )
         except GrantError:
             log.exception("%s by %s failed", action, by)
-            await self._say(
-                inbound,
-                f"I couldn't record that {action}, so nothing should be assumed "
-                f"changed. The box's log has the detail.",
+            await self._emit(
+                inbound, "ricardi",
+                Said(text=f"I couldn't record that {action}, so nothing should be "
+                          "assumed changed. The box's log has the detail."),
+                turn,
             )
             return
         if not held:
-            await self._say(
-                inbound,
-                f"<@{command.user}> holds no tier on *{name}*, so there is nothing to take back.",
+            await self._emit(
+                inbound, "ricardi",
+                Said(text=f"<@{command.user}> holds no tier on *{name}*, so there "
+                          "is nothing to take back."),
+                turn,
             )
             return
-        await self._say(
-            inbound,
-            f"<@{command.user}> no longer holds {' or '.join(held)} on *{name}*.",
+        await self._emit(
+            inbound, "ricardi",
+            Said(text=f"<@{command.user}> no longer holds "
+                      f"{' or '.join(held)} on *{name}*."),
+            turn,
         )
 
     def _email_for(self, slack_id: str) -> str:
@@ -270,16 +312,65 @@ class Ricardi:
             return
         await self.health.saw_failure(cause)
 
+    def _stream_for(self, name: str) -> Stream:
+        """The stream for one name, made on first use and kept.
+
+        One per name, never one for the app: a box serves several agents, and a
+        sequence shared across them would let one project's watcher count
+        another's events. Kept rather than made per turn, so `seq` runs on
+        across every turn in that name.
+        """
+        if name not in self._streams:
+            self._streams[name] = Stream(name, self.sink)
+        return self._streams[name]
+
+    def _route(self, inbound: Inbound, name: str, turn: str) -> Stream:
+        """The stream `name`'s events go on, having said where `turn` comes out.
+
+        Two questions, answered in different places on purpose. *Which stream*
+        an event belongs to is the name: one sequence per agent, so a client
+        watching one project cannot count another's events. *Where it comes
+        out* is the turn, because an event carries no channel -- a browser
+        client has no use for one -- and a destination kept per name is shared
+        by every thread talking to that agent, which is how one conversation's
+        answer ends up in another's thread.
+        """
+        self.transport.bind(turn, inbound.channel, inbound.thread)
+        return self._stream_for(name)
+
+    async def _emit(self, inbound: Inbound, actor: str, body: object,
+                    turn: str) -> None:
+        """Say something, as an event rather than as a string.
+
+        This carries what *Ricardi* says -- help, a binding, a refusal's
+        fallback, an error -- never what an agent said: the agent's own `Said`
+        events are the record of that, and a second one here would post every
+        reply twice.
+
+        Filed under whichever agent the thread is talking to, since her words
+        belong to that conversation, or under no name at all when it is talking
+        to nobody yet. `turn` is this message's, so a word about a turn is
+        posted where the turn is and a client can tie the two together.
+        """
+        stream = self._route(inbound, self.bindings.get(inbound.thread), turn)
+        await stream.emit(actor, body, turn=turn)
+
     async def _permit(
         self,
         inbound: Inbound,
         action: str,
         agent: str = "",
         *,
+        turn: str,
         target: str = "",
         confers: str = "",
-    ) -> bool:
-        """The inbound enforcement point. Every path to an agent passes here."""
+    ) -> tuple[bool, Decision]:
+        """The inbound enforcement point. Every path to an agent passes here.
+
+        The Decision comes back with the verdict so the refusal's rule and tier
+        can reach the stream. Callers must read the first element: the pair
+        itself is always truthy.
+        """
         request = Request(
             action=action,
             principal=self._principal(inbound),
@@ -294,12 +385,40 @@ class Ricardi:
         except Exception:
             # Fail closed, and say so rather than going quiet.
             log.exception("policy failed for %s in %s", inbound.user, inbound.channel)
-            await self._refuse(inbound, "I couldn't check whether you're allowed.")
-            return False
+            reason = "I couldn't check whether you're allowed."
+            denied = Decision(allow=False, reason=reason, rule="policy error")
+            await self._refused(inbound, agent, denied, target, turn)
+            return False, denied
         if not decision.allow:
-            await self._refuse(inbound, decision.reason or "That isn't permitted.")
-            return False
-        return True
+            await self._refused(inbound, agent, decision, target, turn)
+            return False, decision
+        return True, decision
+
+    async def _refused(
+        self, inbound: Inbound, agent: str, decision: Decision, target: str, turn: str
+    ) -> None:
+        reason = decision.reason or "That isn't permitted."
+        # Precondition: `decision` is always a denial here. Every caller is a
+        # deny path, which is what lets the substitution below be
+        # unconditional. `audit.py:record` does the same substitution but gates
+        # it on `decision.allow`, because it is handed both verdicts; if this
+        # ever gains a caller that is not a refusal, it needs that gate too --
+        # an allowed decision with no rule would otherwise be labelled
+        # "default deny" in the stream while the audit log called it nothing.
+        #
+        # The stream gets the rule and the tier; the person gets the reason
+        # alone. Who may see the rule is a renderer's decision, not this one's.
+        # An unmatched deny reads "default deny", the same words audit.py logs.
+        # On the agent the request named, not on the thread's binding: a
+        # refused `tell` must not bind, so there is nothing to read back.
+        stream = self._route(inbound, agent, turn)
+        await stream.emit(
+            "ricardi",
+            Refused(rule=decision.rule or "default deny", reason=reason, tier=decision.tier,
+                    tool="", target=target),
+            turn=turn,
+        )
+        await self._refuse(inbound, reason, turn)
 
     def _principal(self, inbound: Inbound):
         resolve = getattr(self.policy, "principal", None)
@@ -309,7 +428,7 @@ class Ricardi:
             return Principal(id=inbound.user)
         return resolve(inbound.user)
 
-    async def _refuse(self, inbound: Inbound, text: str) -> None:
+    async def _refuse(self, inbound: Inbound, text: str, turn: str) -> None:
         """Tell one person no, without announcing it to the channel.
 
         A refusal to a message that just started a thread goes to the channel,
@@ -323,7 +442,7 @@ class Ricardi:
             where = inbound.thread if inbound.in_thread else ""
             await private(inbound.channel, where, inbound.user, text)
             return
-        await self._say(inbound, text)
+        await self._emit(inbound, "ricardi", Said(text=text), turn)
 
     async def _only_agent(self) -> str:
         """The agent there is no point naming, or "" when there is a choice.
@@ -348,14 +467,15 @@ class Ricardi:
         known = ", ".join(a.name for a in agents) or "none"
         raise BackendError(f"I have no agent called *{name}*. I can reach: {known}.")
 
-    async def _relay(self, inbound: Inbound, agent: str, text: str) -> None:
-        async def notice(line: str) -> None:
-            await self._say(inbound, f"_{agent}_ `{line}`")
-
+    async def _relay(self, inbound: Inbound, agent: str, text: str, turn: str) -> None:
+        # Routed before the turn starts rather than at the first thing Ricardi
+        # says: everything inside the turn is emitted by the backend.
+        stream = self._route(inbound, agent, turn)
         caller = Caller(
             principal=self._principal(inbound),
             resource=Resource(channel_id=inbound.channel),
-            notice=notice,
+            events=stream,
+            turn=turn,
             # From the thread, not from this message: a flag someone set on
             # the way in holds for whoever replies next.
             flags=self.bindings.flags(inbound.thread),
@@ -366,8 +486,12 @@ class Ricardi:
             # silence as a failure well before an agent considers itself slow.
             done, _ = await asyncio.wait({task}, timeout=self.ack_after)
             if not done:
-                await self._say(inbound, f"Passed it to *{agent}*. Still working.")
-            answer = await task
+                await self._emit(
+                    inbound, "ricardi",
+                    Said(text=f"Passed it to *{agent}*. Still working."),
+                    turn,
+                )
+            await task
         finally:
             # If telling the channel failed, or this turn was cancelled, the
             # agent would otherwise keep working with nobody waiting and its
@@ -376,7 +500,8 @@ class Ricardi:
                 task.cancel()
                 with contextlib.suppress(BaseException):
                     await task
-        await self._say(inbound, f"*{agent}*\n{answer}".rstrip())
+        # Nothing is said here about the answer: the turn's own `Said` events
+        # already carried it, block by block, as the agent produced them.
         if self.health is not None:
             # An answered turn proves the credential better than any probe,
             # and tells the channel if it had been told otherwise.
@@ -391,6 +516,3 @@ class Ricardi:
             detail = f" - {agent.description}" if agent.description else ""
             lines.append(f"- *{agent.name}*{detail} ({agent.status})")
         return "\n".join(lines)
-
-    async def _say(self, inbound: Inbound, text: str) -> None:
-        await self.transport.send(inbound.channel, inbound.thread, text)

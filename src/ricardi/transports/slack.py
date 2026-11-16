@@ -18,6 +18,8 @@ import asyncio
 import logging
 import re
 
+from ricardi.events import Event
+from ricardi.render import render
 from ricardi.transports.base import Inbound, OnMessage
 
 log = logging.getLogger("ricardi.slack")
@@ -108,6 +110,8 @@ class SlackTransport:
         # Turns in flight. Held so they are not garbage collected mid-run, and
         # so shutdown can stop them.
         self._turns: set[asyncio.Task[None]] = set()
+        # Where each turn's events are posted, set by whoever started it.
+        self._routes: dict[str, tuple[str, str]] = {}
 
     async def start(self, on_message: OnMessage) -> None:
         try:
@@ -120,9 +124,30 @@ class SlackTransport:
                 "Slack support isn't installed. Install ricardi with the 'slack' extra."
             ) from exc
 
+        from slack_sdk.http_retry.builtin_async_handlers import (
+            AsyncRateLimitErrorRetryHandler,
+            async_default_handlers,
+        )
+        from slack_sdk.web.async_client import AsyncWebClient
+
+        # A turn is many posts now -- one per text block and one per tool call
+        # -- where it used to be one, and Slack's per-channel ceiling is about
+        # a message a second. slack_sdk's defaults retry a dropped connection
+        # and nothing else, so a 429 would raise, `Stream.emit` would log it,
+        # and the channel would quietly lose the middle of a busy turn. Two
+        # retries, honouring Retry-After, cover an ordinary burst; a very busy
+        # turn can still lose lines, which is why the audit log is the record
+        # and `docs/running.md` says so.
+        client = AsyncWebClient(
+            token=self._bot_token,
+            retry_handlers=[
+                *async_default_handlers(),
+                AsyncRateLimitErrorRetryHandler(max_retry_count=2),
+            ],
+        )
         # AsyncApp does not check the token at construction, so a bad one shows
         # up at the auth_test below rather than here.
-        app = AsyncApp(token=self._bot_token)
+        app = AsyncApp(client=client)
         self._app = app
 
         # Bolt sends Slack's acknowledgement only after the listener returns
@@ -157,6 +182,20 @@ class SlackTransport:
 
         self._handler = AsyncSocketModeHandler(app, self._app_token)
         await self._handler.connect_async()
+
+    def bind(self, turn: str, channel: str, thread: str) -> None:
+        self._routes[turn] = (channel, thread)
+
+    def unbind(self, turn: str) -> None:
+        self._routes.pop(turn, None)
+
+    async def emit(self, event: Event) -> None:
+        # Raised, not skipped: an event with nowhere to go is a wiring bug,
+        # and the stream logs what a sink raises.
+        channel, thread = self._routes[event.envelope.turn]
+        text = render(event)
+        if text:
+            await self.send(channel, thread, text)
 
     async def send(self, channel: str, thread: str, text: str) -> None:
         if self._app is None:

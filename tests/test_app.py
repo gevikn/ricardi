@@ -1,8 +1,10 @@
 """One turn at a time, with a fake agent behind it."""
 
+import asyncio
+
 import pytest
 
-from conftest import open_policy
+from conftest import RendersEvents, open_policy
 
 from ricardi.app import Ricardi
 from ricardi.backends.base import Agent
@@ -11,10 +13,11 @@ from ricardi.store import ThreadBindings
 from ricardi.transports.base import Inbound
 
 
-class Recorder:
+class Recorder(RendersEvents):
     """A transport that remembers instead of sending."""
 
     def __init__(self):
+        super().__init__()
         self.sent: list[tuple[str, str, str]] = []
 
     async def start(self, on_message):
@@ -310,3 +313,273 @@ async def test_a_refusal_inside_an_open_thread_stays_there():
     )
     thread, _, _ = transport.private[-1]
     assert thread == "T1"
+
+
+# -- an inbound refusal reaches the stream ---------------------------------
+from ricardi.events import Recorder as EventRecorder, Refused  # noqa: E402
+
+
+def _named_denial():
+    # A request no rule matches is denied with rule "" (the default). A named
+    # deny is what gives the event a rule to carry and the message one to leak.
+    from ricardi.policy import Rule, RulesPolicy
+
+    return RulesPolicy(
+        rules=[Rule(effect="deny", name="no asking here", actions=["ask"])],
+        roster={"u1": "tester@example.com"},
+    )
+
+
+def _grant_policy():
+    from ricardi.policy import Rule, RulesPolicy
+
+    return RulesPolicy(
+        rules=[Rule(effect="allow", actions=["list"])],
+        roster={"u1": "tester@example.com", "U2": "someone@example.com"},
+    )
+
+
+async def test_a_refused_request_emits_the_decision_not_just_the_reason():
+    # _permit discards the Decision today, so rule and tier cannot reach a
+    # transport. The refused person still sees only the reason.
+    sink = EventRecorder()
+    app = Ricardi(transport=PrivateRecorder(), backend=FakeBackend(), ack_after=30.0,
+                  policy=_named_denial(), sink=sink)
+    await app.handle(message("tell scout to read auth.py"))
+    event = sink.events[-1]
+    refused = event.body
+    assert isinstance(refused, Refused)
+    assert refused.rule and refused.tier == ""
+    assert refused.target == ""
+    assert event.envelope.name == "scout"
+
+
+async def test_a_refusal_naming_no_agent_uses_the_empty_name():
+    from ricardi.policy import RulesPolicy
+
+    sink = EventRecorder()
+    policy = RulesPolicy(rules=[], roster={"u1": "tester@example.com"})
+    app = Ricardi(transport=PrivateRecorder(), backend=FakeBackend(), ack_after=30.0,
+                  policy=policy, sink=sink)
+    await app.handle(message("list agents"))
+    assert sink.events[-1].envelope.name == ""
+    assert isinstance(sink.events[-1].body, Refused)
+
+
+async def test_streams_are_per_name_so_sequences_do_not_cross():
+    sink = EventRecorder()
+    app = Ricardi(transport=PrivateRecorder(), backend=FakeBackend(), ack_after=30.0,
+                  policy=closed_policy(), sink=sink)
+    await app.handle(message("tell scout to read auth.py"))
+    await app.handle(message("tell deployer to ship it", thread="t2"))
+    await app.handle(message("tell scout to read b.py", thread="t3"))
+    seqs = [(e.envelope.name, e.envelope.seq) for e in sink.events]
+    assert seqs == [("scout", 1), ("deployer", 1), ("scout", 2)]
+
+
+async def test_a_refused_grant_carries_who_it_was_aimed_at():
+    sink = EventRecorder()
+    app = Ricardi(transport=PrivateRecorder(), backend=FakeBackend(), ack_after=30.0,
+                  policy=_grant_policy(), sink=sink)
+    await app.handle(message("grant <@U2> read on scout"))
+    assert sink.events[-1].body.target == "someone@example.com"
+
+
+async def test_the_person_still_sees_the_reason_and_not_the_rule():
+    sink = EventRecorder()
+    transport = PrivateRecorder()
+    app = Ricardi(transport=transport, backend=FakeBackend(), ack_after=30.0,
+                  policy=_named_denial(), sink=sink)
+    await app.handle(message("tell scout to read auth.py"))
+    refused = sink.events[-1].body
+    assert refused.reason and transport.private[-1][2] == refused.reason
+    assert refused.rule == "no asking here"
+    assert refused.rule not in transport.private[-1][2]
+
+
+async def test_a_policy_failure_emits_a_refusal_and_still_refuses():
+    class Exploding:
+        async def decide(self, request):
+            raise RuntimeError("down")
+
+    sink = EventRecorder()
+    transport = PrivateRecorder()
+    backend = FakeBackend()
+    app = Ricardi(transport=transport, backend=backend, ack_after=30.0,
+                  policy=Exploding(), sink=sink)
+    await app.handle(message("tell scout to read auth.py"))
+    assert sink.events[-1].body.rule == "policy error"
+    assert backend.asked == [] and transport.private
+
+
+async def test_an_inbound_refusal_reaches_the_person_and_not_the_channel():
+    # The transport is the sink now, so the refusal is an event like everything
+    # else -- and the Slack renderer stays quiet about an inbound one, which is
+    # what keeps the channel from being told that someone was turned away.
+    transport = PrivateRecorder()
+    app = Ricardi(transport=transport, backend=FakeBackend(), ack_after=30.0,
+                  policy=closed_policy())
+    await app.handle(message("tell scout to read auth.py"))
+    assert transport.private
+    assert isinstance(transport.emitted[-1].body, Refused)
+    assert not transport.sent, "the channel must not hear about it"
+
+
+async def test_a_default_deny_emits_the_same_words_the_audit_log_uses():
+    # No rule matched, so the decision's rule is "". The stream says so in the
+    # audit log's words rather than going blank on the commonest refusal.
+    sink = EventRecorder()
+    app = Ricardi(transport=PrivateRecorder(), backend=FakeBackend(), ack_after=30.0,
+                  policy=closed_policy(), sink=sink)
+    await app.handle(message("tell scout to read auth.py"))
+    assert sink.events[-1].body.rule == "default deny"
+
+
+# -- everything Ricardi says is an event -----------------------------------
+from ricardi import router  # noqa: E402
+from ricardi.events import Event  # noqa: E402
+from ricardi.render import render  # noqa: E402
+
+
+class Silent(FakeBackend):
+    """An agent that finishes a turn without saying anything.
+
+    The shape `sdk.py` produces for the same turn: a turn that opened and
+    closed with no `Said` between them, and an empty answer.
+    """
+
+    def _answer(self, name: str, text: str) -> str:
+        return ""
+
+
+def shown(transport) -> list[str]:
+    return [text for _, _, text in transport.sent]
+
+
+async def test_everything_ricardi_says_goes_out_as_an_event(wired):
+    app, transport, _ = wired
+    await app.handle(message("tell scout to read auth.py"))
+    assert all(isinstance(c, Event) for c in transport.emitted)
+    # The half that could actually be false: nothing reaches the channel
+    # except by being rendered from one of those events.
+    assert shown(transport) == [t for e in transport.emitted if (t := render(e))]
+    assert shown(transport), "and it did say something"
+
+
+async def test_a_relayed_turn_shares_one_turn_id_end_to_end():
+    # Slow enough that Ricardi's own notice lands inside the turn: the point
+    # is that her word and the agent's carry the same id.
+    transport = Recorder()
+    app = Ricardi(transport=transport, backend=FakeBackend(delay=0.2),
+                  ack_after=0.01, policy=open_policy())
+    await app.handle(message("tell scout to take its time"))
+    ids = {e.envelope.turn for e in transport.emitted}
+    assert len(ids) == 1 and ids != {""}
+    assert any(e.envelope.actor == "ricardi" for e in transport.emitted)
+
+
+async def test_sequence_numbers_continue_across_two_turns_in_one_name(wired):
+    app, transport, _ = wired
+    await app.handle(message("tell scout to read auth.py"))
+    await app.handle(message("and now the tests"))
+    # Three events to a turn -- it started, it said one thing, it ended -- and
+    # the second turn carries on counting rather than starting over.
+    assert [e.envelope.seq for e in transport.emitted] == [1, 2, 3, 4, 5, 6]
+
+
+async def test_the_help_text_still_reaches_slack_unchanged(wired):
+    app, transport, _ = wired
+    await app.handle(message(""))
+    assert router.HELP in "".join(render(e) for e in transport.emitted)
+    assert transport.last.startswith(router.HELP), "and with nothing in front of it"
+
+
+async def test_the_still_working_notice_is_an_event_too():
+    transport = Recorder()
+    app = Ricardi(transport=transport, backend=FakeBackend(delay=0.2),
+                  ack_after=0.01, policy=open_policy())
+    await app.handle(message("tell scout to take its time"))
+    assert any("Still working" in render(e) for e in transport.emitted)
+
+
+async def test_an_answer_reaches_the_channel_exactly_once(wired):
+    # The agent's answer is the Said the backend emitted. A second one from
+    # the app would print every reply twice.
+    app, transport, _ = wired
+    await app.handle(message("tell scout to read auth.py"))
+    assert len([t for t in shown(transport) if "read auth.py" in t]) == 1
+
+
+async def test_a_silent_turn_still_says_one_thing_in_the_channel():
+    # An agent that says nothing must not be indistinguishable from a lost
+    # turn -- in the channel, not only in the stream.
+    transport = Recorder()
+    app = Ricardi(transport=transport, backend=Silent(), ack_after=30.0,
+                  policy=open_policy())
+    await app.handle(message("tell scout to say nothing"))
+    assert len(shown(transport)) == 1
+    assert "without saying anything" in transport.last
+
+
+async def test_a_relayed_caller_carries_the_turn_and_the_stream():
+    class Spy(FakeBackend):
+        def __init__(self):
+            super().__init__()
+            self.callers = []
+
+        async def ask(self, name, text, caller=None):
+            self.callers.append(caller)
+            return await super().ask(name, text, caller)
+
+    transport = Recorder()
+    backend = Spy()
+    app = Ricardi(transport=transport, backend=backend, ack_after=30.0,
+                  policy=open_policy())
+    await app.handle(message("tell scout to read auth.py"))
+    caller = backend.callers[-1]
+    assert caller.turn and caller.events is app._stream_for("scout")
+
+
+# -- two conversations with one agent, at the same time --------------------
+async def test_two_threads_on_one_agent_do_not_cross():
+    # Regression: one route per *name* meant the second message rebound it
+    # while the first turn was still streaming, so the first thread went
+    # silent and the second was shown someone else's answer.
+    transport = Recorder()
+    app = Ricardi(transport=transport, backend=FakeBackend(delay=0.2),
+                  ack_after=30.0, policy=open_policy())
+    await asyncio.gather(
+        app.handle(message("tell scout to read auth.py", thread="t1")),
+        app.handle(message("tell scout to ship it", thread="t2")),
+    )
+    where = {text: thread for _, thread, text in transport.sent}
+    assert where == {"*scout*\n[scout] read auth.py": "t1",
+                     "*scout*\n[scout] ship it": "t2"}
+
+
+async def test_a_message_in_another_thread_does_not_divert_a_running_turn():
+    # The same bug without a second turn: any word Ricardi says about an agent
+    # used to rebind that agent's one route, so a `who` in the thread next
+    # door took the rest of a running turn with it.
+    transport = Recorder()
+    app = Ricardi(transport=transport, backend=FakeBackend(delay=0.2),
+                  ack_after=30.0, policy=open_policy())
+    await app.handle(message("tell scout hello", thread="t2"))
+    running = asyncio.create_task(
+        app.handle(message("tell scout to take its time", thread="t1"))
+    )
+    await asyncio.sleep(0.05)
+    await app.handle(message("who", thread="t2"))
+    await running
+    landed = [(thread, text) for _, thread, text in transport.sent]
+    assert ("t1", "*scout*\n[scout] take its time") in landed
+    assert ("t2", "This thread is talking to *scout*.") in landed
+
+
+async def test_a_finished_message_leaves_no_route_behind(wired):
+    # One route per message is one entry per message; a table nobody clears
+    # is a leak in a process meant to run for months.
+    app, transport, _ = wired
+    await app.handle(message("tell scout to read auth.py"))
+    await app.handle(message("list agents"))
+    assert transport._routes == {}

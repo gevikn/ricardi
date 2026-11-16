@@ -5,6 +5,8 @@ colleagues talking -- is pure, so it is tested on real event payloads rather
 than against a live workspace.
 """
 
+import contextlib
+
 import pytest
 
 from ricardi.transports.slack import (
@@ -144,6 +146,34 @@ def test_the_transport_builds_a_bolt_app_with_arguments_bolt_accepts():
     assert not isinstance(outcome, TypeError), outcome
     assert transport._app is not None
     assert isinstance(transport._app, bolt.AsyncApp)
+
+
+def test_the_slack_client_retries_a_rate_limited_post():
+    """Every event is its own post now, so 429 is a real failure mode.
+
+    slack_sdk's defaults retry a connection error and nothing else: a 429
+    raises, `Stream.emit` logs it, and the channel silently loses the middle of
+    a busy turn. The handler has to be added explicitly.
+    """
+    pytest.importorskip("slack_bolt.app.async_app")
+    import asyncio
+
+    from slack_sdk.http_retry.builtin_async_handlers import (
+        AsyncRateLimitErrorRetryHandler,
+    )
+
+    transport = SlackTransport(bot_token="xoxb-not-real", app_token="xapp-not-real")
+
+    async def build():
+        with contextlib.suppress(Exception):
+            await transport.start(lambda inbound: None)
+
+    asyncio.run(build())
+    handlers = transport._app.client.retry_handlers
+    assert any(isinstance(h, AsyncRateLimitErrorRetryHandler) for h in handlers), handlers
+    # And the defaults are kept, not replaced: a dropped connection was always
+    # retried and must still be.
+    assert len(handlers) > 1, handlers
 
 
 # -- a refusal has to land where it will be read --------------------------

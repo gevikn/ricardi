@@ -17,6 +17,8 @@ import json
 from http import HTTPStatus
 from typing import Any
 
+from ricardi.events import Event
+from ricardi.render import render
 from ricardi.transports.base import Inbound, OnMessage
 
 # Generous for a sentence, small enough that nothing can exhaust memory.
@@ -45,6 +47,8 @@ class LocalTransport:
         self._on_message: OnMessage | None = None
         self._server: asyncio.base_events.Server | None = None
         self._turns: set[asyncio.Task[None]] = set()
+        # Where each turn's events are appended, set by whoever started it.
+        self._routes: dict[str, tuple[str, str]] = {}
 
     # -- Transport ---------------------------------------------------------
     async def start(self, on_message: OnMessage) -> None:
@@ -52,6 +56,20 @@ class LocalTransport:
         self._server = await asyncio.start_server(self._serve, self.host, self.port)
         # port 0 asks the OS for a free one; report back what it gave us.
         self.port = self._server.sockets[0].getsockname()[1]
+
+    def bind(self, turn: str, channel: str, thread: str) -> None:
+        self._routes[turn] = (channel, thread)
+
+    def unbind(self, turn: str) -> None:
+        self._routes.pop(turn, None)
+
+    async def emit(self, event: Event) -> None:
+        # Raised, not skipped: an event with nowhere to go is a wiring bug,
+        # and the stream logs what a sink raises.
+        channel, thread = self._routes[event.envelope.turn]
+        text = render(event)
+        if text:
+            await self.send(channel, thread, text)
 
     async def send(self, channel: str, thread: str, text: str) -> None:
         self.replies.append({"channel": channel, "thread": thread, "text": text})

@@ -152,6 +152,11 @@ class Decision:
     # Which rule decided this, for the audit log. "Why was this allowed?" is
     # unanswerable at 2am without it. Empty means the default denied it.
     rule: str = ""
+    # The tier this was decided against, "" where there was none. Carried out
+    # because `decide` resolves it on its own copy of the request, so the caller
+    # cannot otherwise say which tier a refusal was made on. Informs a message;
+    # no rule or branch reads it.
+    tier: str = ""
 
 
 @runtime_checkable
@@ -520,6 +525,16 @@ class RulesPolicy:
             )
             request = replace(request, tier=tier)
 
+        # Stamped from the request, not from the store's answer: a storeless
+        # policy decides against the tier the caller supplied (and refuses on
+        # it), and the decision should name the tier it was actually made on.
+        return replace(await self._decide_filled(request), tier=request.tier)
+
+    async def _decide_filled(self, request: Request) -> Decision:
+        # Split from `decide` only so that every return below, there are many,
+        # reaches the caller with the tier stamped on it in one place. The
+        # storeless refusal in `decide` returns before this and is deliberately
+        # unstamped: with no store there is no tier to attest.
         # Canonicalise the keys every later step compares, once, here. The
         # conferral check and the grant store already normalise their own
         # arguments, but `Rule.matches` goes through `_glob`, which lowercases

@@ -178,7 +178,7 @@ def test_bindings_with_flags_survive_a_restart(tmp_path):
 
 
 # -- end to end through the app -------------------------------------------
-from conftest import open_policy  # noqa: E402
+from conftest import RendersEvents, open_policy  # noqa: E402
 
 from ricardi.app import Ricardi  # noqa: E402
 from ricardi.backends.base import Caller  # noqa: E402
@@ -186,8 +186,9 @@ from ricardi.backends.fake import FakeBackend  # noqa: E402
 from ricardi.transports.base import Inbound  # noqa: E402
 
 
-class _Recorder:
+class _Recorder(RendersEvents):
     def __init__(self):
+        super().__init__()
         self.sent: list[tuple[str, str, str]] = []
 
     async def start(self, on_message):
