@@ -2,7 +2,7 @@
 
 import pytest
 
-from conftest import open_policy
+from conftest import RendersEvents, open_policy
 
 from ricardi.app import Ricardi
 from ricardi.backends.base import Agent
@@ -11,10 +11,11 @@ from ricardi.store import ThreadBindings
 from ricardi.transports.base import Inbound
 
 
-class Recorder:
+class Recorder(RendersEvents):
     """A transport that remembers instead of sending."""
 
     def __init__(self):
+        super().__init__()
         self.sent: list[tuple[str, str, str]] = []
 
     async def start(self, on_message):
@@ -409,13 +410,17 @@ async def test_a_policy_failure_emits_a_refusal_and_still_refuses():
     assert backend.asked == [] and transport.private
 
 
-async def test_with_no_sink_a_refusal_still_refuses_and_emits_nothing():
+async def test_an_inbound_refusal_reaches_the_person_and_not_the_channel():
+    # The transport is the sink now, so the refusal is an event like everything
+    # else -- and the Slack renderer stays quiet about an inbound one, which is
+    # what keeps the channel from being told that someone was turned away.
     transport = PrivateRecorder()
     app = Ricardi(transport=transport, backend=FakeBackend(), ack_after=30.0,
                   policy=closed_policy())
     await app.handle(message("tell scout to read auth.py"))
     assert transport.private
-    assert app._stream_for("scout") is None
+    assert isinstance(transport.emitted[-1].body, Refused)
+    assert not transport.sent, "the channel must not hear about it"
 
 
 async def test_a_default_deny_emits_the_same_words_the_audit_log_uses():
@@ -426,3 +431,111 @@ async def test_a_default_deny_emits_the_same_words_the_audit_log_uses():
                   policy=closed_policy(), sink=sink)
     await app.handle(message("tell scout to read auth.py"))
     assert sink.events[-1].body.rule == "default deny"
+
+
+# -- everything Ricardi says is an event -----------------------------------
+from ricardi import router  # noqa: E402
+from ricardi.events import Event  # noqa: E402
+from ricardi.render import render  # noqa: E402
+
+
+class Silent(FakeBackend):
+    """An agent that finishes a turn without saying anything.
+
+    The shape `sdk.py` produces for the same turn: a turn that opened and
+    closed with no `Said` between them, and an empty answer.
+    """
+
+    def _answer(self, name: str, text: str) -> str:
+        return ""
+
+
+def shown(transport) -> list[str]:
+    return [text for _, _, text in transport.sent]
+
+
+async def test_everything_ricardi_says_goes_out_as_an_event(wired):
+    app, transport, _ = wired
+    await app.handle(message("tell scout to read auth.py"))
+    assert all(isinstance(c, Event) for c in transport.emitted)
+    # The half that could actually be false: nothing reaches the channel
+    # except by being rendered from one of those events.
+    assert shown(transport) == [t for e in transport.emitted if (t := render(e))]
+    assert shown(transport), "and it did say something"
+
+
+async def test_a_relayed_turn_shares_one_turn_id_end_to_end():
+    # Slow enough that Ricardi's own notice lands inside the turn: the point
+    # is that her word and the agent's carry the same id.
+    transport = Recorder()
+    app = Ricardi(transport=transport, backend=FakeBackend(delay=0.2),
+                  ack_after=0.01, policy=open_policy())
+    await app.handle(message("tell scout to take its time"))
+    ids = {e.envelope.turn for e in transport.emitted}
+    assert len(ids) == 1 and ids != {""}
+    assert any(e.envelope.actor == "ricardi" for e in transport.emitted)
+
+
+async def test_sequence_numbers_continue_across_two_turns_in_one_name(wired):
+    app, transport, _ = wired
+    await app.handle(message("tell scout to read auth.py"))
+    await app.handle(message("and now the tests"))
+    # Three events to a turn -- it started, it said one thing, it ended -- and
+    # the second turn carries on counting rather than starting over.
+    assert [e.envelope.seq for e in transport.emitted] == [1, 2, 3, 4, 5, 6]
+
+
+async def test_the_help_text_still_reaches_slack_unchanged(wired):
+    app, transport, _ = wired
+    await app.handle(message(""))
+    assert router.HELP in "".join(render(e) for e in transport.emitted)
+    assert transport.last.startswith(router.HELP), "and with nothing in front of it"
+
+
+async def test_the_still_working_notice_is_an_event_too():
+    transport = Recorder()
+    app = Ricardi(transport=transport, backend=FakeBackend(delay=0.2),
+                  ack_after=0.01, policy=open_policy())
+    await app.handle(message("tell scout to take its time"))
+    assert any("Still working" in render(e) for e in transport.emitted)
+
+
+async def test_an_answer_reaches_the_channel_exactly_once(wired):
+    # The agent's answer is the Said the backend emitted. A second one from
+    # the app would print every reply twice.
+    app, transport, _ = wired
+    await app.handle(message("tell scout to read auth.py"))
+    assert len([t for t in shown(transport) if "read auth.py" in t]) == 1
+
+
+async def test_a_silent_turn_still_says_one_thing_in_the_channel():
+    # An agent that says nothing must not be indistinguishable from a lost
+    # turn -- in the channel, not only in the stream.
+    transport = Recorder()
+    app = Ricardi(transport=transport, backend=Silent(), ack_after=30.0,
+                  policy=open_policy())
+    await app.handle(message("tell scout to say nothing"))
+    assert len(shown(transport)) == 1
+    assert "without saying anything" in transport.last
+
+
+async def test_a_relayed_caller_carries_the_turn_and_the_stream():
+    class Spy(FakeBackend):
+        def __init__(self):
+            super().__init__()
+            self.callers = []
+
+        async def ask(self, name, text, caller=None):
+            self.callers.append(caller)
+            return await super().ask(name, text, caller)
+
+    transport = Recorder()
+    backend = Spy()
+    app = Ricardi(transport=transport, backend=backend, ack_after=30.0,
+                  policy=open_policy())
+    await app.handle(message("tell scout to read auth.py"))
+    caller = backend.callers[-1]
+    assert caller.turn and caller.events is app._stream_for("scout")
+    # No notice: the channel renders ToolStarted now, and announcing through
+    # the caller as well would post the same line for the same call twice.
+    assert caller.notice is None

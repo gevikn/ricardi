@@ -12,7 +12,7 @@ import json
 import pytest
 
 from ricardi.backends.base import BackendError
-from ricardi.backends.sdk import MAX_ANSWER, SdkBackend, assemble
+from ricardi.backends.sdk import SdkBackend, assemble
 from ricardi.config import AgentSpec
 from ricardi.events import Recorder, Stream, ToolFinished, ToolStarted, to_wire
 
@@ -41,9 +41,11 @@ class Stubbed(SdkBackend):
 
 
 # -- assembling the answer ------------------------------------------------
-def test_nothing_said_is_said_plainly():
-    assert assemble([]) == "(finished without saying anything)"
-    assert assemble(["  ", ""]) == "(finished without saying anything)"
+def test_nothing_said_assembles_to_nothing():
+    # The empty answer is how `TurnEnded` says the agent spoke no blocks; the
+    # sentence a person reads for one of those is render.py's to choose.
+    assert assemble([]) == ""
+    assert assemble(["  ", ""]) == ""
 
 
 def test_a_single_block_comes_through_as_is():
@@ -62,11 +64,11 @@ def test_blocks_are_separated_so_they_read_as_paragraphs():
     assert assemble(["one", "two"]) == "one\n\ntwo"
 
 
-def test_a_very_long_answer_is_truncated_and_says_so():
-    answer = assemble(["x" * (MAX_ANSWER + 500)])
-    assert len(answer) < MAX_ANSWER + 200
-    assert "truncated" in answer
-    assert str(MAX_ANSWER + 500) in answer
+def test_a_long_answer_is_carried_whole_rather_than_cut_here():
+    # The ceiling belongs to the one reader that has one. Cutting here would
+    # mean a browser client could never be shown the rest of the answer.
+    answer = assemble(["x" * 9000])
+    assert answer == "x" * 9000
 
 
 # -- one turn at a time per agent -----------------------------------------
@@ -549,8 +551,7 @@ async def test_an_agent_that_says_nothing_still_opens_and_closes_the_turn():
     # a turn that started and ended with no Said between them.
     backend, recorder, caller = a_turn([finished()])
     try:
-        assert await backend.ask("ricardi", "go", caller) == (
-            "(finished without saying anything)")
+        assert await backend.ask("ricardi", "go", caller) == ""
     finally:
         await backend.close()
     assert kinds(recorder) == ["TurnStarted", "TurnEnded"]

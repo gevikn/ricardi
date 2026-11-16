@@ -13,9 +13,9 @@ from typing import Callable
 
 from ricardi.events import Event
 
-# What fits in one Slack message with room for the framing. The same value
-# `backends/sdk.py` holds today; that copy goes when the app stops asking the
-# backend for a string, because until then the backend still has to truncate.
+# What fits in one Slack message with room for the framing. The only copy:
+# the backend carries the whole answer in the stream, and this is the one
+# reader with a channel to fit it into.
 MAX_ANSWER: int = 3500
 
 
@@ -25,6 +25,11 @@ def _said(event: Event) -> str:
         # The stream carries the whole answer; only a channel with a ceiling
         # has to cut it, so the cut is made here and not upstream.
         text = f"{text[:MAX_ANSWER].rstrip()}\n\n[...truncated, {len(text)} characters in all]"
+    if event.envelope.actor == "ricardi":
+        # Ricardi speaking for herself -- help, a binding, the still-working
+        # notice. The name heads an answer to say which agent gave it; on her
+        # own words it would be attributing them to the agent.
+        return text
     return f"*{event.envelope.name}*\n{text}"
 
 
@@ -45,6 +50,12 @@ def _turn_ended(event: Event) -> str:
     # "done" is silent because the answer reaches the channel as a Said;
     # rendering the TurnEnded too would post every reply twice. The other
     # outcomes carry no Said of their own, so the channel needs a sentence.
+    #
+    # Unless the turn said nothing at all: there was no Said to carry it, and
+    # an agent that finished quietly must not look the same as a turn that was
+    # lost. One line, which is what a person needs to tell those apart.
+    if event.body.outcome == "done" and not event.body.answer:
+        return f"_{event.envelope.name}_ finished without saying anything."
     return {
         "done": "",
         "cut_short": f"_{event.envelope.name}_ was stopped before it finished.",

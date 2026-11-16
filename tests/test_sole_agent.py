@@ -13,7 +13,7 @@ guessing would send work to the wrong checkout.
 
 import pytest
 
-from conftest import TESTER, open_policy
+from conftest import RendersEvents, TESTER, open_policy
 
 from ricardi.app import Ricardi
 from ricardi.backends.base import Agent
@@ -23,8 +23,9 @@ from ricardi.store import ThreadBindings
 from ricardi.transports.base import Inbound
 
 
-class Recorder:
+class Recorder(RendersEvents):
     def __init__(self):
+        super().__init__()
         self.sent: list[tuple[str, str, str]] = []
 
     async def start(self, on_message):

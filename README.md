@@ -259,9 +259,12 @@ indistinguishable from the box being switched off. Every real turn counts as a
 check, so on a channel in use the answer arrives with the first person who
 notices; the hourly probe is there for the weekend when nobody asks.
 
-An `announce` obligation posts a command into the thread before it runs. It is a
-**record, not a checkpoint** — nothing waits for a reply and there is no way to
-veto from Slack. It makes use visible, not reversible. The durable version is
+Every command an agent runs is posted into the thread as it starts, summarised,
+never with its arguments. It is a **record, not a checkpoint** — nothing waits
+for a reply and there is no way to veto from Slack. It makes use visible, not
+reversible. An `announce` obligation on a rule is how a policy used to single a
+command out for this; every call is posted now, so it adds nothing to what the
+channel sees. The durable version is
 the audit log at `state/audit.jsonl` (rotated by size), one JSON object per decision, including
 everything that was refused and so never appeared in the channel at all. Tool
 inputs there are summarised and truncated, because a log that records every
@@ -335,17 +338,20 @@ Two things to get right:
 
 ## Known limits
 
-- A turn is delivered as one message at the end. Progress is not streamed, so a
-  long turn shows only "still working" until it finishes. Everything the agent
-  said is kept rather than just its closing line, which can be verbose; output
-  past 3500 characters is truncated with a note.
+- A turn arrives as it happens, a message at a time: each block the agent says
+  when it says it, each tool call as it starts, and a sentence when a turn ends
+  any way but normally. Everything it said is kept rather than just its closing
+  line, which can be verbose; any one message past 3500 characters is truncated
+  with a note. A turn that finishes without saying anything says so, so it
+  cannot be mistaken for one that was lost.
 - One turn at a time per agent, since a session is a single conversation. A
   second person asking the same agent waits behind the first.
 - `tell`/`ask`/`<agent>:` is parsed exactly, not interpreted. A sentence like
   `note: the build is red` is read as addressing an agent called `note`. With
   a choice of agents that is an error; with only one there was nowhere else it
   could have been going, so it is sent there as typed.
-- Progress inside a turn is not streamed; only announced commands appear while
-  work is happening.
+- What a turn carries is richer than a chat channel can show. The agent's
+  reasoning and the output of each tool are in the stream and are not posted;
+  Slack gets the text, the calls and the outcome.
 - Thread bindings are never evicted, so `state/threads.json` grows with every
   conversation. Harmless at this size, but it is a file that only grows.

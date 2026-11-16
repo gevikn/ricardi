@@ -7,13 +7,29 @@ from ricardi.events import (
 from ricardi.render import MAX_ANSWER, RENDERERS, render
 
 
-def event(body, name="ricardi"):
+def event(body, name="ricardi", actor="agent"):
     return Event(Envelope(seq=1, at="2026-11-10T15:04:05Z", name=name, turn="t1",
-                          actor="agent"), body)
+                          actor=actor), body)
 
 
 def test_a_said_event_renders_as_the_agents_answer():
     assert render(event(Said(text="hello"), name="ricardi")) == "*ricardi*\nhello"
+
+
+def test_ricardis_own_words_are_not_headed_with_an_agents_name():
+    # The name heads an answer to say which agent gave it. On her own words --
+    # help, a binding, the still-working notice -- it would be saying the
+    # agent said them.
+    out = render(event(Said(text="Passed it to *scout*. Still working."),
+                       name="scout", actor="ricardi"))
+    assert out == "Passed it to *scout*. Still working."
+
+
+def test_a_turn_that_said_nothing_is_not_left_looking_like_a_lost_one():
+    # The answer is empty because no block was spoken, so no Said reached the
+    # channel. Without a line here the turn would print nothing at all.
+    out = render(event(TurnEnded("done", ""), name="scout"))
+    assert "scout" in out and "without saying anything" in out
 
 
 def test_a_long_answer_is_truncated_here_rather_than_in_the_backend():

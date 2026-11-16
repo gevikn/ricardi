@@ -15,7 +15,7 @@ import json
 
 import pytest
 
-from conftest import open_policy
+from conftest import RendersEvents, open_policy
 from ricardi.app import Ricardi
 from ricardi.backends.base import Caller, Agent
 from ricardi.backends.fake import FakeBackend
@@ -25,8 +25,9 @@ from ricardi.store import SessionIds, ThreadBindings
 from ricardi.transports.base import Inbound
 
 
-class Recorder:
+class Recorder(RendersEvents):
     def __init__(self):
+        super().__init__()
         self.sent = []
 
     async def start(self, on_message):

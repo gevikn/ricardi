@@ -40,9 +40,6 @@ log = logging.getLogger("ricardi.sdk")
 
 # A turn that never ends would leave Slack silent forever. Better to say so.
 DEFAULT_TURN_TIMEOUT = 600.0
-# Slack accepts far more than this, but a wall of text in a channel is not an
-# answer. Long output belongs in a file the agent writes and names.
-MAX_ANSWER = 3500
 
 # How long the PreToolUse gate may take. The same as the SDK's own default, so
 # this changes no behaviour -- the point is that the deadline on the one check
@@ -60,20 +57,19 @@ _CUT_SHORT = {
 
 
 def assemble(said: list[str]) -> str:
-    """One Slack message from everything the agent said this turn.
+    """Everything the agent said this turn, as one answer.
 
     Every block, not just the last. An agent that works in steps often ends on
     "Done." with the substance several blocks earlier, so keeping only the
     closing text loses the answer. Verbosity is the lesser fault.
+
+    Whole, and never cut: this is what `TurnEnded` carries, and a client with
+    room for all of it should get all of it. A channel with a ceiling makes its
+    own cut, in `render.py`. An agent that said nothing answers with "", which
+    is what the wire contract calls an answer with none -- the sentence a
+    person reads for one of those is a renderer's to choose.
     """
-    blocks = [b.strip() for b in said if b and b.strip()]
-    if not blocks:
-        return "(finished without saying anything)"
-    answer = "\n\n".join(blocks)
-    if len(answer) <= MAX_ANSWER:
-        return answer
-    kept = answer[:MAX_ANSWER].rstrip()
-    return f"{kept}\n\n[...truncated, {len(answer)} characters in all]"
+    return "\n\n".join(b.strip() for b in said if b and b.strip())
 
 
 def _result_text(content: object) -> str:
@@ -308,14 +304,18 @@ class SdkBackend(AgentBackend):
 
             if not decision.allow:
                 log.info("denied %s for %s: %s", tool, live.spec.name, decision.reason)
-                await emit(Refused(rule=decision.rule, reason=decision.reason,
+                # An unmatched deny reads "default deny", the same words
+                # audit.py has always logged: an operator comparing a client's
+                # view against the audit log must see one wording, not two.
+                await emit(Refused(rule=decision.rule or "default deny",
+                                   reason=decision.reason,
                                    tier=decision.tier, tool=tool, target=""))
                 return decided(False, decision.reason)
 
-            if "announce" in decision.obligations and caller.events is not None:
-                # Built by the factory so the arguments are summarised, not carried.
-                await emit(tool_started(tool, request.tool_input, tool_use_id or ""))
-
+            # No event for an allowed call: `_one_turn` emits a ToolStarted for
+            # every one of them, under the SDK's own tool_use_id, and that is
+            # the announcement now that a transport renders the stream. One
+            # here as well would show a client two starts for one call.
             if "announce" in decision.obligations and caller.notice is not None:
                 # Posted before the command runs, but this is a record, not a
                 # checkpoint: nothing waits for a reply and there is no way to

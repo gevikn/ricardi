@@ -9,7 +9,7 @@ that fires on a typo is a monitor somebody mutes.
 
 import pytest
 
-from conftest import open_policy
+from conftest import RendersEvents, open_policy
 
 from ricardi.app import Ricardi
 from ricardi.backends.base import Agent, BackendError
@@ -20,8 +20,9 @@ from ricardi.transports.base import Inbound
 EXPIRED = "API Error: 401 Unauthorized: OAuth token has expired"
 
 
-class Recorder:
+class Recorder(RendersEvents):
     def __init__(self):
+        super().__init__()
         self.sent: list[tuple[str, str, str]] = []
 
     async def start(self, on_message):

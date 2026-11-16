@@ -6,14 +6,13 @@ same with or without anyone watching.
 """
 
 import importlib.util
-import json
 
 import pytest
 
 from ricardi.backends.base import Caller
 from ricardi.backends.sdk import SdkBackend
 from ricardi.config import AgentSpec
-from ricardi.events import Recorder, Refused, Stream, ToolStarted, to_wire
+from ricardi.events import Recorder, Refused, Stream
 from ricardi.policy import Decision, Principal
 
 
@@ -101,7 +100,10 @@ async def test_a_missing_policy_emits_a_refusal_and_still_denies():
     assert recorder.events[-1].body.rule == "no policy"
 
 
-async def test_an_announced_tool_emits_rather_than_only_posting_a_notice():
+async def test_an_announced_tool_leaves_the_start_to_the_turn():
+    # The turn emits a ToolStarted for every call, under the SDK's own
+    # tool_use_id. One here as well would show a client two starts for one
+    # call, which is the thing no renderer is allowed to have to sort out.
     posted = []
 
     async def notice(text):
@@ -111,11 +113,16 @@ async def test_an_announced_tool_emits_rather_than_only_posting_a_notice():
     backend, live, recorder = make(Fixed(allow), notice=notice)
     out = await run(live, backend, "Bash", {"command": "deploy", "token": "hunter2"})
     assert out["hookSpecificOutput"]["permissionDecision"] == "allow"
-    started = recorder.events[-1].body
-    assert isinstance(started, ToolStarted)
-    assert (started.tool, started.tool_use_id) == ("Bash", "toolu_1")
-    assert posted, "the notice stays until the channel moves onto events"
-    assert "hunter2" not in json.dumps([to_wire(e) for e in recorder.events])
+    assert recorder.events == []
+    assert posted, "and the obligation itself still fires"
+
+
+async def test_a_default_deny_emits_the_same_words_the_audit_log_uses():
+    # No rule matched, so the decision's rule is "". A client comparing what
+    # it was shown against state/audit.jsonl must read one wording, not two.
+    backend, live, recorder = make(Fixed(Decision(allow=False, reason="no")))
+    await run(live, backend)
+    assert recorder.events[-1].body.rule == "default deny"
 
 
 async def test_an_allowed_tool_with_no_obligation_emits_nothing():
@@ -134,7 +141,7 @@ async def test_a_gate_with_no_sink_decides_identically():
         (DENY, 1),
         (Decision(allow=False, reason="no", rule="r"), 1),
         (Decision(allow=True), 0),
-        (Decision(allow=True, obligations=("announce",)), 1),
+        (Decision(allow=True, obligations=("announce",)), 0),
         (RuntimeError("down"), 1),
         (None, 1),
     ]
