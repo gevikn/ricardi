@@ -59,6 +59,12 @@ Example:
 | `outcome` | string | `done`, `cut_short`, `failed` or `timed_out` |
 | `answer`  | string | the final answer, empty when there is none |
 
+A new *kind* is additive and safe for a lenient client. A new *envelope field*
+is a schema-version change: a strict reader refuses any key it does not know,
+so every strict reader would refuse the new events. That is intended. A body
+field may not share a name with an envelope field, `v` or `kind`; the module
+refuses it at import.
+
 ## Output cap
 
 Free text is capped per event; the cap and what a capped event looks like are

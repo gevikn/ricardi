@@ -1,8 +1,11 @@
 """The event vocabulary and its JSON wire form."""
 
 import json
+from dataclasses import dataclass
 
 import pytest
+
+from ricardi import events
 
 from ricardi.events import (
     ACTORS,
@@ -21,10 +24,68 @@ from ricardi.events import (
 )
 
 
-def test_an_event_round_trips_through_the_wire_form():
+# One instance per kind in _BODIES; the test below fails if a kind is added
+# without one, so the round trip cannot quietly stop covering it.
+_SAMPLES = {
+    "turn_started": TurnStarted(text="go"),
+    "said": Said(text="hello"),
+    "thought": Thought(text="hmm"),
+    "turn_ended": TurnEnded(outcome="timed_out", answer="partial"),
+}
+
+
+def test_every_kind_has_a_sample():
+    assert set(_SAMPLES) == set(events._BODIES)
+
+
+@pytest.mark.parametrize("kind", sorted(_SAMPLES))
+def test_an_event_round_trips_through_the_wire_form(kind):
     event = Event(Envelope(seq=1, at="2026-11-10T15:04:05Z", name="ricardi",
-                           turn="t1", actor="agent"), Said(text="hello"))
+                           turn="t1", actor="agent"), _SAMPLES[kind])
     assert from_wire(to_wire(event)) == event
+
+
+def test_a_turn_ended_with_a_bad_outcome_is_refused_on_read_too():
+    wire = to_wire(Event(Envelope(1, now(), "n", "t", "agent"),
+                         TurnEnded(outcome="done", answer="")))
+    wire["outcome"] = "exploded"
+    with pytest.raises(ValueError):
+        from_wire(wire)
+
+
+def test_a_body_field_named_like_an_envelope_field_is_refused_at_definition():
+    @dataclass(frozen=True)
+    class ToolUsed:
+        name: str
+        KIND = "tool_used"
+
+    with pytest.raises(TypeError):
+        events._check_bodies({"tool_used": ToolUsed})
+
+
+def test_int_and_bool_fields_round_trip(monkeypatch):
+    @dataclass(frozen=True)
+    class Measured:
+        path: str
+        ms: int
+        ok: bool
+        KIND = "measured"
+
+    monkeypatch.setitem(events._BODIES, "measured", Measured)
+    event = Event(Envelope(1, now(), "n", "t", "agent"), Measured("a", 3, True))
+    assert from_wire(to_wire(event)) == event
+    wire = to_wire(event)
+    wire["ms"] = True
+    with pytest.raises(ValueError):
+        from_wire(wire)
+
+
+def test_a_boolean_or_float_version_is_not_version_one():
+    base = {"seq": 1, "at": now(), "name": "n", "turn": "t",
+            "actor": "agent", "kind": "said", "text": "x"}
+    for bad in (True, 1.0):
+        with pytest.raises(ValueError):
+            from_wire({**base, "v": bad})
 
 
 def test_the_wire_form_is_flat_and_names_its_kind_and_version():

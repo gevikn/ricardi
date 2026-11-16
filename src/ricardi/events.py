@@ -11,9 +11,13 @@ one binding of it. Python 3.11 stdlib only, because a TypeScript client reads
 the same contract and the box takes no runtime dependency for it.
 """
 
+# No `from __future__ import annotations` here, deliberately: `from_wire` reads
+# each body field's type from `f.type`, which is a real class only while
+# annotations are evaluated. The future import would turn it into the string
+# "str" and silently break the reader.
 from dataclasses import dataclass, fields
 from datetime import datetime, timezone
-from typing import ClassVar
+from typing import ClassVar, TypeVar
 
 # Bumped only when an existing field changes meaning. A new kind is not a bump:
 # clients are lenient about kinds they do not know, which is the whole point.
@@ -106,6 +110,25 @@ _BODIES: dict[str, type] = {
 }
 
 _ENVELOPE_FIELDS = tuple(f.name for f in fields(Envelope))
+_RESERVED = frozenset({"v", "kind", *_ENVELOPE_FIELDS})
+
+
+def _check_bodies(bodies: dict[str, type]) -> None:
+    """Refuse a body field that shares a name with the envelope or `v`/`kind`.
+
+    The wire form is flat, so such a field would overwrite the envelope's value
+    on write, `name` (the partition key) included, and the event would be
+    filed under the wrong agent without any error. Failing at import puts the
+    mistake in the author's first run instead of in a transcript.
+    """
+    for kind, cls in bodies.items():
+        clash = _RESERVED & {f.name for f in fields(cls)}
+        if clash:
+            raise TypeError(f"{kind} has field(s) {sorted(clash)} that the "
+                            "envelope owns; name them something else")
+
+
+_check_bodies(_BODIES)
 
 
 def to_wire(event: Event) -> dict[str, object]:
@@ -118,12 +141,16 @@ def to_wire(event: Event) -> dict[str, object]:
     return wire
 
 
-def _need(data: dict[str, object], name: str, kind: type) -> object:
+T = TypeVar("T")
+
+
+def _need(data: dict[str, object], name: str, kind: type[T]) -> T:
     if name not in data:
         raise ValueError(f"event is missing {name!r}")
     value = data[name]
-    # bool is an int in Python, and a JSON true is not a sequence number.
-    if not isinstance(value, kind) or isinstance(value, bool):
+    # bool is an int in Python, and a JSON true is not a sequence number; but
+    # a field declared bool must still be readable.
+    if not isinstance(value, kind) or (kind is not bool and isinstance(value, bool)):
         raise ValueError(f"{name!r} must be {kind.__name__}, got {value!r}")
     return value
 
@@ -136,27 +163,27 @@ def from_wire(data: dict[str, object], *, strict: bool = True) -> Event:
     later does not break a client that predates it. A version it does not speak
     is refused either way: leniency covers additions, not changed meanings.
     """
-    version = data.get("v")
+    version = _need(data, "v", int)
     if version != SCHEMA_VERSION:
         raise ValueError(f"unsupported schema version {version!r}")
     envelope = Envelope(
-        seq=_need(data, "seq", int),  # type: ignore[arg-type]
-        at=_need(data, "at", str),  # type: ignore[arg-type]
-        name=_need(data, "name", str),  # type: ignore[arg-type]
-        turn=_need(data, "turn", str),  # type: ignore[arg-type]
-        actor=_need(data, "actor", str),  # type: ignore[arg-type]
+        seq=_need(data, "seq", int),
+        at=_need(data, "at", str),
+        name=_need(data, "name", str),
+        turn=_need(data, "turn", str),
+        actor=_need(data, "actor", str),
     )
     kind = _need(data, "kind", str)
-    rest = {k: v for k, v in data.items()
-            if k not in ("v", "kind", *_ENVELOPE_FIELDS)}
-    cls = _BODIES.get(kind)  # type: ignore[arg-type]
+    rest = {k: v for k, v in data.items() if k not in _RESERVED}
+    cls = _BODIES.get(kind)
     if cls is None:
         if strict:
             raise ValueError(f"unknown kind {kind!r}")
-        return Event(envelope, Unknown(kind=kind, fields=rest))  # type: ignore[arg-type]
-    names = [f.name for f in fields(cls)]
+        return Event(envelope, Unknown(kind=kind, fields=rest))
+    names = {f.name for f in fields(cls)}
     if strict:
-        extra = sorted(set(rest) - set(names))
+        extra = sorted(set(rest) - names)
         if extra:
             raise ValueError(f"{kind} has no field {extra[0]!r}")
-    return Event(envelope, cls(**{n: _need(rest, n, str) for n in names}))
+    return Event(envelope, cls(**{f.name: _need(rest, f.name, f.type)
+                                  for f in fields(cls)}))
