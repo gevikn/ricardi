@@ -36,9 +36,33 @@ pytestmark = [
 MARKER = "quartzite-7731"
 
 
+# Slack user id -> email, the way `[identity]` in policy.toml supplies it.
+# Without a roster `RulesPolicy.principal` reports every asker as unknown, so
+# the app path below would refuse before an agent was ever reached. "tester" is
+# the id LocalTransport gives an HTTP caller that names none.
+ROSTER = {"U1": "you@example.com", "tester": "tester@example.com"}
+
+
 def reading_policy():
     """What a question-and-answer agent needs, and nothing else."""
-    return RulesPolicy([Rule(effect="allow", tools=["Read", "Glob", "Grep"])])
+    return RulesPolicy(
+        [Rule(effect="allow", tools=["Read", "Glob", "Grep"])], roster=ROSTER
+    )
+
+
+def caller(**kw):
+    """Someone the roster knows, which every tool decision needs.
+
+    These tests drive the backend directly, so nothing fills this in for them:
+    a default `Caller()` carries `Principal(known=False)` and the policy rightly
+    refuses every tool call with `rule="no roster entry"`. Every `ask` below
+    therefore passes one, and the tests that assert a refusal pass one too --
+    otherwise they pass because the asker was a stranger, not because of the
+    rule they are named after, which is the weakest possible reason to be green.
+    """
+    return Caller(
+        principal=Principal(id="U1", email="you@example.com", known=True), **kw
+    )
 
 
 @pytest.fixture
@@ -69,7 +93,9 @@ async def test_an_agent_reads_its_own_directory(scratch):
     """
     backend = SdkBackend([spec(scratch)], turn_timeout=180, policy=reading_policy())
     try:
-        answer = await backend.ask("scout", "What are the contents of marker.txt?")
+        answer = await backend.ask(
+            "scout", "What are the contents of marker.txt?", caller()
+        )
         assert MARKER in answer, answer
     finally:
         await backend.close()
@@ -78,9 +104,11 @@ async def test_an_agent_reads_its_own_directory(scratch):
 async def test_an_agent_remembers_the_turn_before(scratch):
     backend = SdkBackend([spec(scratch)], turn_timeout=180, policy=reading_policy())
     try:
-        await backend.ask("scout", "Read marker.txt and remember what it says.")
+        await backend.ask("scout", "Read marker.txt and remember what it says.", caller())
         # No mention of the file: only the session's own history can answer it.
-        answer = await backend.ask("scout", "What did that file say? Repeat it exactly.")
+        answer = await backend.ask(
+            "scout", "What did that file say? Repeat it exactly.", caller()
+        )
         assert MARKER in answer, answer
     finally:
         await backend.close()
@@ -98,8 +126,8 @@ async def test_two_agents_keep_separate_conversations(tmp_path):
                          policy=reading_policy())
     try:
         a, b = await asyncio.gather(
-            backend.ask("lefty", "What is in who.txt?"),
-            backend.ask("righty", "What is in who.txt?"),
+            backend.ask("lefty", "What is in who.txt?", caller()),
+            backend.ask("righty", "What is in who.txt?", caller()),
         )
         assert "left-alpha" in a, a
         assert "right-beta" in b, b
@@ -114,7 +142,7 @@ async def test_an_unknown_agent_is_refused_before_any_session_starts(scratch):
     backend = SdkBackend([spec(scratch)], policy=reading_policy())
     try:
         with pytest.raises(BackendError, match="no agent called"):
-            await backend.ask("nobody", "hello")
+            await backend.ask("nobody", "hello", caller())
     finally:
         await backend.close()
 
@@ -125,7 +153,7 @@ async def test_a_turn_that_overruns_is_given_up_on(scratch):
     backend = SdkBackend([spec(scratch)], turn_timeout=0.5, policy=reading_policy())
     try:
         with pytest.raises(BackendError, match="without finishing"):
-            await backend.ask("scout", "Read marker.txt and summarise it.")
+            await backend.ask("scout", "Read marker.txt and summarise it.", caller())
     finally:
         await backend.close()
 
@@ -138,7 +166,7 @@ async def test_the_whole_stack_over_http(scratch):
         transport=transport,
         backend=backend,
         ack_after=3.0,
-        policy=RulesPolicy([Rule(effect="allow")]),
+        policy=RulesPolicy([Rule(effect="allow")], roster=ROSTER),
     )
     await app.start()
     port = transport.port
@@ -180,6 +208,7 @@ async def test_a_real_agent_is_stopped_from_running_what_policy_forbids(scratch)
             "scout",
             "Run the shell command `echo quartzite-escaped` and tell me its output. "
             "If you cannot run it, say exactly: BLOCKED",
+            caller(),
         )
         # Bash is not in the reading policy, so the gate refuses it and the
         # agent has to report that rather than produce output.
@@ -206,13 +235,10 @@ async def test_a_real_agent_may_run_what_policy_permits(scratch):
     ])
     backend = SdkBackend([spec(scratch)], turn_timeout=180, policy=policy)
     try:
-        caller = Caller(
-            principal=Principal(id="U1", email="you@example.com", known=True),
-        )
         answer = await backend.ask(
             "scout",
             "Using the shell, print the contents of marker.txt and tell me what it says.",
-            caller,
+            caller(),
         )
         assert MARKER in answer, answer
     finally:
@@ -233,6 +259,7 @@ async def test_a_write_outside_the_allowed_root_is_refused_in_practice(scratch, 
             "scout",
             f"Create a file at {forbidden} containing the word hello. "
             "If you cannot, say so.",
+            caller(),
         )
         assert not forbidden.exists(), "the gate let a write through outside its root"
     finally:
@@ -256,7 +283,9 @@ async def test_a_real_agent_resumes_its_conversation_after_a_restart(scratch, tm
         policy=reading_policy(), sessions=SessionIds(store),
     )
     try:
-        await first.ask("scout", "Read marker.txt and remember exactly what it says.")
+        await first.ask(
+            "scout", "Read marker.txt and remember exactly what it says.", caller()
+        )
     finally:
         await first.close()
 
@@ -269,7 +298,9 @@ async def test_a_real_agent_resumes_its_conversation_after_a_restart(scratch, tm
     )
     try:
         # Never names the file: only the resumed history can answer this.
-        answer = await second.ask("scout", "What did that file say? Repeat it exactly.")
+        answer = await second.ask(
+            "scout", "What did that file say? Repeat it exactly.", caller()
+        )
         assert MARKER in answer, answer
     finally:
         await second.close()
@@ -279,14 +310,18 @@ async def test_without_a_session_store_a_restarted_agent_has_forgotten(scratch):
     """The behaviour before the fix, kept as the contrast."""
     first = SdkBackend([spec(scratch)], turn_timeout=180, policy=reading_policy())
     try:
-        await first.ask("scout", "Read marker.txt and remember exactly what it says.")
+        await first.ask(
+            "scout", "Read marker.txt and remember exactly what it says.", caller()
+        )
     finally:
         await first.close()
 
     second = SdkBackend([spec(scratch)], turn_timeout=180, policy=reading_policy())
     try:
         answer = await second.ask(
-            "scout", "What did that file say? Repeat it exactly. If you do not know, say UNKNOWN."
+            "scout",
+            "What did that file say? Repeat it exactly. If you do not know, say UNKNOWN.",
+            caller(),
         )
         assert MARKER not in answer, "it should have no history to draw on"
     finally:
@@ -318,7 +353,7 @@ async def test_two_threads_two_agents_at_once_through_the_app(tmp_path):
         backend=backend,
         bindings=ThreadBindings(tmp_path / "threads.json"),
         ack_after=2.0,
-        policy=RulesPolicy([Rule(effect="allow")]),
+        policy=RulesPolicy([Rule(effect="allow")], roster=ROSTER),
     )
     await app.start()
     port = transport.port
