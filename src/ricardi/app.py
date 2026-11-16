@@ -333,11 +333,12 @@ class Ricardi:
         reason = decision.reason or "That isn't permitted."
         # The stream gets the rule and the tier; the person gets the reason
         # alone. Who may see the rule is a renderer's decision, not this one's.
+        # An unmatched deny reads "default deny", the same words audit.py logs.
         stream = self._stream_for(agent)
         if stream is not None:
             await stream.emit(
                 "ricardi",
-                Refused(rule=decision.rule, reason=reason, tier=decision.tier,
+                Refused(rule=decision.rule or "default deny", reason=reason, tier=decision.tier,
                         tool="", target=target),
             )
         await self._refuse(inbound, reason)

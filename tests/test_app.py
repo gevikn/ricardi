@@ -416,3 +416,13 @@ async def test_with_no_sink_a_refusal_still_refuses_and_emits_nothing():
     await app.handle(message("tell scout to read auth.py"))
     assert transport.private
     assert app._stream_for("scout") is None
+
+
+async def test_a_default_deny_emits_the_same_words_the_audit_log_uses():
+    # No rule matched, so the decision's rule is "". The stream says so in the
+    # audit log's words rather than going blank on the commonest refusal.
+    sink = EventRecorder()
+    app = Ricardi(transport=PrivateRecorder(), backend=FakeBackend(), ack_after=30.0,
+                  policy=closed_policy(), sink=sink)
+    await app.handle(message("tell scout to read auth.py"))
+    assert sink.events[-1].body.rule == "default deny"
