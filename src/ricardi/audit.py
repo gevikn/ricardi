@@ -1,7 +1,7 @@
 """A durable record of every decision.
 
 Two people agreeing what Claude may do on their box only holds if they can see
-what it actually did. Slack shows the announced commands; this is the complete
+what it actually did. Slack shows every command that ran; this is the complete
 record, including everything that was refused and never reached the channel.
 
 One JSON object per line, append-only. Nothing in here is a secret: tool inputs

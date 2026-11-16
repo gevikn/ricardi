@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Awaitable, Callable, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from ricardi.events import Stream
 from ricardi.policy import Principal, Resource
@@ -11,17 +11,18 @@ from ricardi.policy import Principal, Resource
 
 @dataclass(frozen=True)
 class Caller:
-    """Who a turn is being run for, and how to tell them something mid-turn.
+    """Who a turn is being run for.
 
     Carried into the backend because a tool decision depends on who asked, not
-    only on which agent is running. `notice` posts back into the conversation
-    the request came from, which is how an announced command reaches the people
-    who agreed to the limits.
+    only on which agent is running. There used to be a `notice` callback here
+    as well, for a command an `announce` obligation singled out; a turn now
+    emits a `ToolStarted` for every call it makes and a transport renders it,
+    so the callback had nothing left to do that the stream was not already
+    doing twice.
     """
 
     principal: Principal = Principal()
     resource: Resource = Resource()
-    notice: Callable[[str], Awaitable[None]] | None = None
     # What the thread gave up. Carried here because a tool decision happens
     # deep inside a turn, long after the message that asked for it.
     flags: tuple[str, ...] = ()

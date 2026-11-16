@@ -538,9 +538,6 @@ async def test_a_relayed_caller_carries_the_turn_and_the_stream():
     await app.handle(message("tell scout to read auth.py"))
     caller = backend.callers[-1]
     assert caller.turn and caller.events is app._stream_for("scout")
-    # No notice: the channel renders ToolStarted now, and announcing through
-    # the caller as well would post the same line for the same call twice.
-    assert caller.notice is None
 
 
 # -- two conversations with one agent, at the same time --------------------

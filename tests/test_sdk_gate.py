@@ -100,23 +100,6 @@ async def test_a_missing_policy_emits_a_refusal_and_still_denies():
     assert recorder.events[-1].body.rule == "no policy"
 
 
-async def test_an_announced_tool_leaves_the_start_to_the_turn():
-    # The turn emits a ToolStarted for every call, under the SDK's own
-    # tool_use_id. One here as well would show a client two starts for one
-    # call, which is the thing no renderer is allowed to have to sort out.
-    posted = []
-
-    async def notice(text):
-        posted.append(text)
-
-    allow = Decision(allow=True, obligations=("announce",))
-    backend, live, recorder = make(Fixed(allow), notice=notice)
-    out = await run(live, backend, "Bash", {"command": "deploy", "token": "hunter2"})
-    assert out["hookSpecificOutput"]["permissionDecision"] == "allow"
-    assert recorder.events == []
-    assert posted, "and the obligation itself still fires"
-
-
 async def test_a_default_deny_emits_the_same_words_the_audit_log_uses():
     # No rule matched, so the decision's rule is "". A client comparing what
     # it was shown against state/audit.jsonl must read one wording, not two.
@@ -133,23 +116,21 @@ async def test_an_allowed_tool_with_no_obligation_emits_nothing():
 
 async def test_a_gate_with_no_sink_decides_identically():
     # The sink is observation. Removing it must not change one decision.
-    async def notice(text):
-        pass
-
     # (what the policy does, how many events a watched gate should emit)
     cases = [
         (DENY, 1),
         (Decision(allow=False, reason="no", rule="r"), 1),
         (Decision(allow=True), 0),
+        # The obligation is still grammar policy.py accepts; nothing reads it.
         (Decision(allow=True, obligations=("announce",)), 0),
         (RuntimeError("down"), 1),
         (None, 1),
     ]
     for answer, emitted in cases:
         policy = None if answer is None else Fixed(answer)
-        watched, wlive, recorder = make(policy, notice=notice)
-        bare, blive, _ = make(policy, notice=notice)
-        blive.caller = Caller(principal=wlive.caller.principal, notice=notice)
+        watched, wlive, recorder = make(policy)
+        bare, blive, _ = make(policy)
+        blive.caller = Caller(principal=wlive.caller.principal)
         assert blive.caller.events is None
         assert await run(wlive, watched) == await run(blive, bare), answer
         # The watched half really was watched, or the comparison proves nothing.

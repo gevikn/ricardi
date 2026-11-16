@@ -154,8 +154,7 @@ The live suite starts actual agents in scratch directories and checks they read
 their own files, remember the previous turn, stay out of each other's
 directories, and surface a hung turn instead of going quiet. It also checks the
 gate against a live session: that a forbidden command does not run, that a
-permitted one does and is announced first, and that a write outside the allowed
-root never lands.
+permitted one does, and that a write outside the allowed root never lands.
 
 ## Deploying it
 

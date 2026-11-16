@@ -133,8 +133,11 @@ tools      = ["Write", "Edit", "NotebookEdit"]
 path_under = "/workspace/ricardi"
 
 # Running things is where you and the other engineer have to actually agree.
-# Every allowed command announces itself in the thread before it runs, so the
-# agreement is visible while there is still time to object.
+# Every command an agent runs is posted into the thread as it starts, so the
+# agreement stays visible. It is a record, not a checkpoint: nothing waits for
+# a reply and there is no way to veto from the channel. The `announce`
+# obligation below is still accepted, but it singles nothing out any more --
+# every call is posted, with or without it.
 # "shell" covers whichever shell tool the platform uses: Bash on macOS, Linux
 # and WSL, PowerShell on Windows. Naming one of them directly covers nothing on
 # the other, which is a quiet way to end up with no rule at all.
@@ -148,7 +151,7 @@ path_under = "/workspace/ricardi"
 # that would also admit commit, checkout and rebase, which the denies further
 # down do not cover.
 [[rule]]
-name            = "ricardi: commands may be run here, and are announced"
+name            = "ricardi: commands may be run here"
 effect          = "allow"
 actions         = ["tool"]
 agents          = ["ricardi"]

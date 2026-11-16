@@ -33,7 +33,7 @@ from ricardi.events import (
     tool_output,
     tool_started,
 )
-from ricardi.policy import PolicyPoint, Request, summarise
+from ricardi.policy import PolicyPoint, Request
 from ricardi.store import SessionIds
 
 log = logging.getLogger("ricardi.sdk")
@@ -319,15 +319,12 @@ class SdkBackend(AgentBackend):
             # every one of them, under the SDK's own tool_use_id, and that is
             # the announcement now that a transport renders the stream. One
             # here as well would show a client two starts for one call.
-            if "announce" in decision.obligations and caller.notice is not None:
-                # Posted before the command runs, but this is a record, not a
-                # checkpoint: nothing waits for a reply and there is no way to
-                # veto from the channel. It makes use visible, not reversible.
-                try:
-                    await caller.notice(summarise(tool, request.tool_input))
-                except Exception:
-                    log.debug("could not announce %s", tool, exc_info=True)
-
+            #
+            # The `announce` obligation is therefore nothing this reads. It is
+            # still parsed and validated by `policy.py`, because policy files
+            # in the field carry it and a restart that failed validation on a
+            # running box would be a worse outcome than an obligation that
+            # describes what every call already does.
             return decided(True, "")
 
         return gate

@@ -466,9 +466,6 @@ class Ricardi:
         caller = Caller(
             principal=self._principal(inbound),
             resource=Resource(channel_id=inbound.channel),
-            # No `notice`: a transport renders the turn's own `ToolStarted`,
-            # so announcing through the caller as well would post the same
-            # line twice for the same command.
             events=stream,
             turn=turn,
             # From the thread, not from this message: a flag someone set on

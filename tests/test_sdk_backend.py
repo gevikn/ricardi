@@ -160,12 +160,11 @@ from ricardi.backends.base import Caller  # noqa: E402
 from ricardi.policy import Principal, Rule, RulesPolicy  # noqa: E402
 
 
-def gated(rules, notice=None):
+def gated(rules):
     backend = Stubbed([spec()], policy=RulesPolicy(rules))
     live = backend._live["scout"]
     live.caller = Caller(
         principal=Principal(id="U1", email="you@example.com", known=True),
-        notice=notice,
     )
     hook = backend._gate(live)
 
@@ -207,44 +206,6 @@ async def test_the_denial_names_the_command_so_a_human_can_read_the_log():
     _, gate = gated([Rule(effect="allow", tools=["Read"])])
     result = await gate("Bash", {"command": "git push origin main"})
     assert "git push origin main" in result["permissionDecisionReason"]
-
-
-async def test_an_announced_command_reaches_the_channel_before_it_runs():
-    said: list[str] = []
-
-    async def notice(line):
-        said.append(line)
-
-    _, gate = gated(
-        [Rule(effect="allow", tools=["Bash"], obligations=["announce"])],
-        notice=notice,
-    )
-    result = await gate("Bash", {"command": "pytest -q"})
-    assert result["permissionDecision"] == "allow"
-    assert said == ["Bash: pytest -q"]
-
-
-async def test_a_tool_allowed_without_the_obligation_is_silent():
-    said: list[str] = []
-
-    async def notice(line):
-        said.append(line)
-
-    _, gate = gated([Rule(effect="allow", tools=["Read"])], notice=notice)
-    await gate("Read", {"file_path": "/repo/main.py"})
-    assert said == []
-
-
-async def test_a_failing_announcement_does_not_block_the_tool():
-    async def notice(line):
-        raise RuntimeError("slack is down")
-
-    _, gate = gated(
-        [Rule(effect="allow", tools=["Bash"], obligations=["announce"])],
-        notice=notice,
-    )
-    result = await gate("Bash", {"command": "pytest"})
-    assert result["permissionDecision"] == "allow"
 
 
 async def test_a_policy_that_raises_denies_the_tool():
