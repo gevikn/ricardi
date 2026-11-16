@@ -59,6 +59,63 @@ Example:
 | `outcome` | string | `done`, `cut_short`, `failed` or `timed_out` |
 | `answer`  | string | the final answer, empty when there is none |
 
+### `tool_started`
+
+| field         | type   | meaning |
+|---------------|--------|---------|
+| `tool`        | string | the tool's name |
+| `summary`     | string | a one-line description of the call; never the arguments |
+| `tool_use_id` | string | ties this to its `tool_output` and `tool_finished` |
+
+Raw tool input never enters the stream: a log that records every argument
+eventually records a password, so no kind has a field that could hold one.
+
+### `tool_output`
+
+| field         | type    | meaning |
+|---------------|---------|---------|
+| `tool_use_id` | string  | the call this output belongs to |
+| `text`        | string  | the output, capped (see Output cap) |
+| `truncated`   | boolean | true when `text` is shorter than what the tool produced |
+
+### `tool_finished`
+
+| field         | type    | meaning |
+|---------------|---------|---------|
+| `tool_use_id` | string  | the call that ended |
+| `tool`        | string  | the tool's name |
+| `ok`          | boolean | whether the call succeeded |
+| `ms`          | integer | how long it took, in milliseconds |
+
+### `refused`
+
+| field    | type   | meaning |
+|----------|--------|---------|
+| `rule`   | string | which rule decided; empty when the default did |
+| `reason` | string | what to tell the person, without naming the rule |
+| `tier`   | string | the tier the person held, empty if none |
+| `tool`   | string | the tool refused, empty when not a tool call |
+| `target` | string | what the request was aimed at, empty if nothing |
+
+### `diffed`
+
+| field   | type            | meaning |
+|---------|-----------------|---------|
+| `path`  | string          | the file the agent changed |
+| `hunks` | array of string | unified-diff hunks |
+
+Unlike `tool_started`, this carries content. The redaction rule is about tool
+input, where a password lives; a diff is the file the agent changed, and a
+watcher sees everything the session prints. No tier governs that.
+
+### `pending`
+
+| field            | type            | meaning |
+|------------------|-----------------|---------|
+| `correlation_id` | string          | how an answer finds this question |
+| `question`       | string          | what is being asked |
+| `options`        | array of string | the answers offered, empty when free text |
+
 A new *kind* is additive and safe for a lenient client. A new *envelope field*
 is a schema-version change: a strict reader refuses any key it does not know,
 so every strict reader would refuse the new events. That is intended. A body
@@ -67,9 +124,11 @@ refuses it at import.
 
 ## Output cap
 
-Free text is capped per event; the cap and what a capped event looks like are
-defined alongside the events that carry output, and are added to this document
-with them.
+`tool_output.text` is capped at `MAX_OUTPUT`, 8000 characters. Longer output
+is cut to that length and `truncated` is `true`; output of exactly 8000 is not
+truncated. The cap applies per event, so a client never has to size a frame for
+an unbounded log. Other free text (`said`, `thought`, `diffed`) is not capped
+here.
 
 ## The server is strict, a client is lenient
 

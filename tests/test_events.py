@@ -1,7 +1,9 @@
 """The event vocabulary and its JSON wire form."""
 
+import dataclasses
 import json
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 
@@ -9,6 +11,15 @@ from ricardi import events
 
 from ricardi.events import (
     ACTORS,
+    MAX_OUTPUT,
+    Diffed,
+    Pending,
+    Refused,
+    ToolFinished,
+    ToolOutput,
+    ToolStarted,
+    tool_output,
+    tool_started,
     OUTCOMES,
     SCHEMA_VERSION,
     Envelope,
@@ -22,6 +33,9 @@ from ricardi.events import (
     now,
     to_wire,
 )
+from ricardi.policy import summarise
+
+ROOT = Path(__file__).resolve().parent.parent
 
 
 # One instance per kind in _BODIES; the test below fails if a kind is added
@@ -31,6 +45,12 @@ _SAMPLES = {
     "said": Said(text="hello"),
     "thought": Thought(text="hmm"),
     "turn_ended": TurnEnded(outcome="timed_out", answer="partial"),
+    "tool_started": ToolStarted("Bash", "Bash: ls", "tu_1"),
+    "tool_output": ToolOutput("tu_1", "ok", False),
+    "tool_finished": ToolFinished("tu_1", "Bash", True, 12),
+    "refused": Refused("tier", "You hold read on ricardi.", "read", "Edit", ""),
+    "diffed": Diffed("src/a.py", ("@@ -1 +1 @@", "-a", "+b")),
+    "pending": Pending("c1", "Run `git push`?", ("yes", "no")),
 }
 
 
@@ -165,3 +185,56 @@ def test_an_envelope_field_missing_is_refused():
     with pytest.raises(ValueError):
         from_wire({"v": 1, "seq": 1, "at": now(), "turn": "t",
                    "actor": "agent", "kind": "said", "text": "x"})
+
+
+def test_no_body_can_hold_a_mapping():
+    # Structural, not behavioural: "raw arguments never enter the stream" is a
+    # property of the vocabulary, not a promise each caller remembers.
+    for body in events._BODIES.values():
+        for f in dataclasses.fields(body):
+            assert "dict" not in str(f.type).lower(), (body.__name__, f.name)
+
+
+def test_a_tool_event_carries_only_the_summary_of_its_input():
+    command = {"command": "psql -U admin -W hunter2"}
+    started = tool_started("Bash", command, "tu_1")
+    assert started.summary == summarise("Bash", command)
+    wire = to_wire(Event(Envelope(1, now(), "n", "t", "agent"), started))
+    assert "tool_input" not in wire and "command" not in wire
+
+
+def test_a_tool_with_no_summarisable_input_is_still_identified():
+    started = tool_started("TodoWrite", {"todos": [{"a": 1}]}, "tu_2")
+    assert started.tool == "TodoWrite"
+    assert started.summary == "TodoWrite"
+
+
+def test_output_is_capped_and_says_that_it_was():
+    out = tool_output("tu_1", "x" * (MAX_OUTPUT + 500))
+    assert len(out.text) == MAX_OUTPUT and out.truncated is True
+    assert tool_output("tu_1", "x" * MAX_OUTPUT).truncated is False
+    assert tool_output("tu_1", "short").truncated is False
+
+
+def test_a_tuple_field_survives_a_real_json_round_trip():
+    # JSON has no tuples: a client sends a list, and the frozen body must still
+    # compare equal to the one that was written.
+    event = Event(Envelope(1, now(), "n", "t", "agent"),
+                  Diffed("a.py", ("@@", "-a", "+b")))
+    assert from_wire(json.loads(json.dumps(to_wire(event)))) == event
+
+
+def test_a_tuple_field_with_a_non_string_item_is_refused():
+    wire = to_wire(Event(Envelope(1, now(), "n", "t", "agent"), Pending("c", "q", ("a",))))
+    wire["options"] = ["a", 2]
+    with pytest.raises(ValueError):
+        from_wire(wire)
+    wire["options"] = "a"
+    with pytest.raises(ValueError):
+        from_wire(wire)
+
+
+def test_every_kind_in_the_module_is_documented():
+    text = (ROOT / "docs" / "events.md").read_text(encoding="utf-8")
+    for kind in events._BODIES:
+        assert f"`{kind}`" in text, kind

@@ -291,3 +291,13 @@ async def test_the_same_policy_decides_normally_once_a_store_is_open(
         assert refused.rule != "tiers-without-a-store"
     finally:
         store.close()
+
+
+async def test_a_decision_carries_the_tier_it_was_decided_against(written_toml):
+    # The tier is resolved inside `decide` and the caller's Request never sees
+    # it, so without this a refusal event cannot say which tier the person held.
+    policy = load(written_toml(ALLOW_ALL))
+    decision = await policy.decide(_tool("Edit", "read"))
+    assert decision.allow is False
+    assert decision.tier == "read"
+    assert (await policy.decide(_tool("Edit", "write"))).tier == "write"
