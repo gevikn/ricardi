@@ -16,10 +16,22 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass, field
 
 from ricardi.backends.base import Agent, AgentBackend, BackendError, Caller
 from ricardi.config import AgentSpec
+from ricardi.events import (
+    Said,
+    Stream,
+    Thought,
+    ToolFinished,
+    TurnEnded,
+    TurnStarted,
+    new_turn_id,
+    tool_output,
+    tool_started,
+)
 from ricardi.policy import PolicyPoint, Request, summarise
 from ricardi.store import SessionIds
 
@@ -61,6 +73,21 @@ def assemble(said: list[str]) -> str:
         return answer
     kept = answer[:MAX_ANSWER].rstrip()
     return f"{kept}\n\n[...truncated, {len(answer)} characters in all]"
+
+
+def _result_text(content: object) -> str:
+    """What a tool returned, as the one string the stream carries.
+
+    The SDK hands back either a string or the API's list of typed parts. Only
+    the text parts have anything a reader can show: an image part would put a
+    megabyte of base64 into an event nobody could render.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(part["text"] for part in content
+                         if isinstance(part, dict) and isinstance(part.get("text"), str))
+    return ""
 
 
 @dataclass
@@ -285,38 +312,127 @@ class SdkBackend(AgentBackend):
         return gate
 
     async def _one_turn(self, live: _Live, client: object, text: str) -> str:
-        from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock
+        """Run one turn, and report it as it happens.
 
-        await client.query(text)  # type: ignore[attr-defined]
+        The answer this returns is the whole turn flattened to a string, which
+        is all Slack can hold. The stream is the same turn unflattened, for a
+        client that can show a tool call while it is still running.
+        """
+        from claude_agent_sdk import (
+            AssistantMessage,
+            ResultMessage,
+            TextBlock,
+            ThinkingBlock,
+            ToolResultBlock,
+            ToolUseBlock,
+            UserMessage,
+        )
+
+        stream: Stream | None = live.caller.events if live.caller else None
+        turn = new_turn_id()
+
+        async def emit(body: object, actor: str = "agent") -> None:
+            if stream is not None:
+                await stream.emit(actor, body, turn=turn)
+
         said: list[str] = []
-        async for message in client.receive_response():  # type: ignore[attr-defined]
-            if isinstance(message, AssistantMessage):
-                for block in message.content:
-                    if isinstance(block, TextBlock) and block.text.strip():
-                        said.append(block.text.strip())
-            elif isinstance(message, ResultMessage):
-                if getattr(message, "session_id", ""):
-                    live.session_id = message.session_id
-                    self._sessions.remember(live.spec.name, message.session_id)
-                cost = getattr(message, "total_cost_usd", None)
-                if isinstance(cost, (int, float)):
-                    live.spent += float(cost)
-                    log.info(
-                        "agent %s turn cost $%.4f (session total $%.4f)",
-                        live.spec.name, cost, live.spent,
-                    )
-                if message.subtype != "success":
-                    cut = _CUT_SHORT.get(message.subtype)
-                    if cut and said:
-                        # It answered, but not to the end. Say so rather than
-                        # letting a truncated answer read as a finished one.
-                        said.append(f"_(stopped early: {cut})_")
-                    elif not said:
-                        raise BackendError(
-                            f"*{live.spec.name}* stopped early "
-                            f"({cut or message.subtype})."
+        # tool_use_id -> (tool, when it began). The call names the tool and the
+        # result does not, and neither is timed, so the pairing is kept here.
+        running: dict[str, tuple[str, float]] = {}
+        # What the turn ended as, decided on each way out of the block below.
+        outcome = "done"
+        answer = ""
+
+        # Opened before anything can fail, so the `finally` that closes the
+        # turn is never reached without this having been sent. "person" rather
+        # than "owner": the backend is given a principal, not a standing, and
+        # guessing the higher of the two would be the wrong way to guess.
+        await emit(TurnStarted(text=text), actor="person")
+        try:
+            await client.query(text)  # type: ignore[attr-defined]
+            async for message in client.receive_response():  # type: ignore[attr-defined]
+                if isinstance(message, AssistantMessage):
+                    for block in message.content:
+                        if isinstance(block, TextBlock) and (spoken := block.text.strip()):
+                            said.append(spoken)
+                            await emit(Said(text=spoken))
+                        elif isinstance(block, ThinkingBlock):
+                            if mused := block.thinking.strip():
+                                await emit(Thought(text=mused))
+                        elif isinstance(block, ToolUseBlock):
+                            running[block.id] = (block.name, time.monotonic())
+                            # Through the factory, never the class: it is what
+                            # summarises, and a ToolStarted built by hand would
+                            # be one with the arguments still in it.
+                            await emit(tool_started(block.name, block.input or {}, block.id))
+                elif isinstance(message, UserMessage):
+                    # A tool's result arrives as the user's turn; that is the
+                    # only reason this message type is read here.
+                    content = message.content if isinstance(message.content, list) else ()
+                    for block in content:
+                        if not isinstance(block, ToolResultBlock):
+                            continue
+                        await emit(tool_output(block.tool_use_id, _result_text(block.content)))
+                        call = running.pop(block.tool_use_id, None)
+                        if call is None:
+                            # A result for a call this turn never saw start. The
+                            # output is still worth showing; a ToolFinished
+                            # would have to invent both the tool and the time it
+                            # took, and an invented duration is worse than none.
+                            log.debug("result for unknown tool call %s", block.tool_use_id)
+                            continue
+                        tool, began = call
+                        await emit(ToolFinished(
+                            tool_use_id=block.tool_use_id,
+                            tool=tool,
+                            ok=not block.is_error,
+                            ms=int((time.monotonic() - began) * 1000),
+                        ))
+                elif isinstance(message, ResultMessage):
+                    if getattr(message, "session_id", ""):
+                        live.session_id = message.session_id
+                        self._sessions.remember(live.spec.name, message.session_id)
+                    cost = getattr(message, "total_cost_usd", None)
+                    if isinstance(cost, (int, float)):
+                        live.spent += float(cost)
+                        log.info(
+                            "agent %s turn cost $%.4f (session total $%.4f)",
+                            live.spec.name, cost, live.spent,
                         )
-        return assemble(said)
+                    if message.subtype != "success":
+                        cut = _CUT_SHORT.get(message.subtype)
+                        if cut:
+                            outcome = "cut_short"
+                        if cut and said:
+                            # It answered, but not to the end. Say so rather than
+                            # letting a truncated answer read as a finished one.
+                            said.append(f"_(stopped early: {cut})_")
+                        elif not said:
+                            raise BackendError(
+                                f"*{live.spec.name}* stopped early "
+                                f"({cut or message.subtype})."
+                            )
+            answer = assemble(said)
+            return answer
+        except asyncio.CancelledError:
+            # The only thing that cancels a turn is `ask`'s timeout, and a
+            # client that never saw the turn close would show it running still.
+            outcome = "timed_out"
+            raise
+        except BaseException:
+            # A ceiling already seen keeps `cut_short`: such a turn raised
+            # because it had nothing left to say, not because anything broke.
+            # BaseException rather than Exception so that nothing at all can
+            # leave this block with the turn still reported as finished.
+            if outcome != "cut_short":
+                outcome = "failed"
+            raise
+        finally:
+            # Every way out passes through here -- a result, an exception and a
+            # timeout -- which is what makes a turn that never closes impossible
+            # rather than merely unlikely. `answer` is empty on the ways out
+            # that had none; the Said events already carry whatever was said.
+            await emit(TurnEnded(outcome=outcome, answer=answer))
 
     async def _drop(self, live: _Live, reason: str) -> None:
         client = live.client

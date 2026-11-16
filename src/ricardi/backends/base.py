@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Protocol, runtime_checkable
 
+from ricardi.events import Stream
 from ricardi.policy import Principal, Resource
 
 
@@ -24,6 +25,10 @@ class Caller:
     # What the thread gave up. Carried here because a tool decision happens
     # deep inside a turn, long after the message that asked for it.
     flags: tuple[str, ...] = ()
+    # Where a turn reports what it is doing, as it does it. None means nobody is
+    # watching: a turn with no stream must run exactly as it did before there
+    # were events at all, so this is observation and never a dependency.
+    events: Stream | None = None
 
 
 @dataclass(frozen=True)

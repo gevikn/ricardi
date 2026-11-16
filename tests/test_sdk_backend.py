@@ -6,12 +6,15 @@ at once, and how a turn's output is assembled.
 """
 
 import asyncio
+import importlib.util
+import json
 
 import pytest
 
 from ricardi.backends.base import BackendError
 from ricardi.backends.sdk import MAX_ANSWER, SdkBackend, assemble
 from ricardi.config import AgentSpec
+from ricardi.events import Recorder, Stream, ToolFinished, ToolStarted, to_wire
 
 
 def spec(name="scout", cwd="."):
@@ -327,3 +330,299 @@ async def test_the_gate_passes_the_agents_roots_to_policy():
         {"tool_name": "Read", "tool_input": {"file_path": "/workspace/one/x.py"}}, None, None
     )
     assert seen["roots"] == ("/workspace/one", "/workspace/two")
+
+
+# -- what a turn puts on the stream ---------------------------------------
+# These are the only tests that run the real `_one_turn`: `Replaying` stands in
+# for the session, not for the turn, so what they assert is the emission order
+# of the code itself rather than of a stub. The turn is where a client's whole
+# picture comes from, and a turn that never closes leaves one spinning.
+
+# The real `_one_turn` reads the SDK's message shapes, so these need it
+# installed; nothing else in this file does.
+needs_sdk = pytest.mark.skipif(
+    importlib.util.find_spec("claude_agent_sdk") is None,
+    reason="the Claude Agent SDK isn't installed",
+)
+
+
+class Replaying(SdkBackend):
+    """A backend whose session replays prepared messages.
+
+    An item that is an exception is raised rather than yielded, and a number is
+    a pause -- which is how a turn is made to overrun its timeout.
+    """
+
+    def __init__(self, specs, messages, **kw):
+        super().__init__(specs, **kw)
+        self._messages = messages
+
+    async def _connect(self, live):
+        return _Session(self._messages)
+
+
+class _Session:
+    def __init__(self, messages):
+        self._messages = messages
+        self.asked: list[str] = []
+
+    async def query(self, text):
+        self.asked.append(text)
+
+    async def receive_response(self):
+        for message in self._messages:
+            if isinstance(message, BaseException):
+                raise message
+            if isinstance(message, (int, float)):
+                await asyncio.sleep(message)
+                continue
+            yield message
+
+
+def said(text):
+    from claude_agent_sdk import AssistantMessage, TextBlock
+
+    return AssistantMessage(content=[TextBlock(text=text)], model="claude")
+
+
+def thought(text):
+    from claude_agent_sdk import AssistantMessage, ThinkingBlock
+
+    return AssistantMessage(
+        content=[ThinkingBlock(thinking=text, signature="sig")], model="claude"
+    )
+
+
+def tool_call(tool_use_id="tu_1", name="Bash", **tool_input):
+    from claude_agent_sdk import AssistantMessage, ToolUseBlock
+
+    return AssistantMessage(
+        content=[ToolUseBlock(id=tool_use_id, name=name, input=tool_input)], model="claude"
+    )
+
+
+def tool_result(tool_use_id="tu_1", content="ok", is_error=False):
+    from claude_agent_sdk import ToolResultBlock, UserMessage
+
+    return UserMessage(
+        content=[
+            ToolResultBlock(tool_use_id=tool_use_id, content=content, is_error=is_error)
+        ]
+    )
+
+
+def finished(subtype="success"):
+    from claude_agent_sdk import ResultMessage
+
+    return ResultMessage(
+        subtype=subtype,
+        duration_ms=1,
+        duration_api_ms=1,
+        is_error=subtype != "success",
+        num_turns=1,
+        session_id="sess-1",
+    )
+
+
+def a_turn(messages, **kw):
+    """A backend replaying `messages`, with a recorder wired to the caller."""
+    recorder = Recorder()
+    backend = Replaying([spec("ricardi")], messages, **kw)
+    caller = Caller(events=Stream("ricardi", recorder))
+    return backend, recorder, caller
+
+
+def kinds(recorder):
+    return [type(e.body).__name__ for e in recorder.events]
+
+
+@needs_sdk
+async def test_a_turn_emits_text_tool_calls_and_an_outcome():
+    backend, recorder, caller = a_turn(
+        [tool_call(command="deploy"), tool_result(), said("hello"), finished()]
+    )
+    try:
+        assert await backend.ask("ricardi", "go", caller) == "hello"
+    finally:
+        await backend.close()
+    assert kinds(recorder) == ["TurnStarted", "ToolStarted", "ToolOutput",
+                               "ToolFinished", "Said", "TurnEnded"]
+    assert recorder.events[0].body.text == "go"
+    assert recorder.events[-1].body.outcome == "done"
+    assert recorder.events[-1].body.answer == "hello"
+
+
+@needs_sdk
+async def test_every_event_in_a_turn_carries_the_same_turn_id():
+    backend, recorder, caller = a_turn([said("hello"), finished()])
+    try:
+        await backend.ask("ricardi", "go", caller)
+    finally:
+        await backend.close()
+    turns = {e.envelope.turn for e in recorder.events}
+    assert len(turns) == 1 and turns != {""}
+
+
+@needs_sdk
+async def test_a_tool_block_emits_the_summary_and_never_the_arguments():
+    backend, recorder, caller = a_turn(
+        [tool_call(command="deploy", token="hunter2"), tool_result(), finished()]
+    )
+    try:
+        await backend.ask("ricardi", "go", caller)
+    finally:
+        await backend.close()
+    started = next(e for e in recorder.events if isinstance(e.body, ToolStarted))
+    assert started.body.tool_use_id == "tu_1"
+    assert started.body.summary == "Bash: deploy"
+    # The structure of a tool's input never reaches the stream, so an argument
+    # the summary did not quote cannot leak through some other field.
+    assert "hunter2" not in json.dumps([to_wire(e) for e in recorder.events])
+
+
+@needs_sdk
+async def test_a_tool_result_is_tied_to_its_call_and_timed():
+    backend, recorder, caller = a_turn(
+        [tool_call(command="deploy"), tool_result(content="built 3 files"), finished()]
+    )
+    try:
+        await backend.ask("ricardi", "go", caller)
+    finally:
+        await backend.close()
+    output = recorder.events[2].body
+    assert (output.tool_use_id, output.text, output.truncated) == (
+        "tu_1", "built 3 files", False)
+    ended = next(e.body for e in recorder.events if isinstance(e.body, ToolFinished))
+    assert (ended.tool_use_id, ended.tool, ended.ok) == ("tu_1", "Bash", True)
+    assert isinstance(ended.ms, int) and ended.ms >= 0
+
+
+@needs_sdk
+async def test_a_tool_that_failed_says_so_rather_than_being_dropped():
+    backend, recorder, caller = a_turn(
+        [tool_call(command="deploy"), tool_result(content="boom", is_error=True), finished()]
+    )
+    try:
+        await backend.ask("ricardi", "go", caller)
+    finally:
+        await backend.close()
+    assert recorder.events[3].body.ok is False
+
+
+@needs_sdk
+async def test_a_result_for_a_call_we_never_saw_is_not_given_a_made_up_duration():
+    # The output is still worth showing; a ToolFinished would have to invent
+    # both the tool's name and how long it took.
+    backend, recorder, caller = a_turn([tool_result(tool_use_id="tu_ghost"), finished()])
+    try:
+        await backend.ask("ricardi", "go", caller)
+    finally:
+        await backend.close()
+    assert kinds(recorder) == ["TurnStarted", "ToolOutput", "TurnEnded"]
+
+
+@needs_sdk
+async def test_a_tool_still_open_when_a_turn_ends_closes_the_turn_anyway():
+    backend, recorder, caller = a_turn([tool_call(command="deploy"), finished()])
+    try:
+        await backend.ask("ricardi", "go", caller)
+    finally:
+        await backend.close()
+    assert kinds(recorder) == ["TurnStarted", "ToolStarted", "TurnEnded"]
+    assert recorder.events[-1].body.outcome == "done"
+
+
+@needs_sdk
+async def test_the_agents_reasoning_is_carried_apart_from_what_it_said():
+    backend, recorder, caller = a_turn([thought("hmm"), said("hello"), finished()])
+    try:
+        await backend.ask("ricardi", "go", caller)
+    finally:
+        await backend.close()
+    assert kinds(recorder) == ["TurnStarted", "Thought", "Said", "TurnEnded"]
+    assert recorder.events[1].body.text == "hmm"
+
+
+@needs_sdk
+async def test_an_agent_that_says_nothing_still_opens_and_closes_the_turn():
+    # An empty turn must be distinguishable from a lost one: the stream shows
+    # a turn that started and ended with no Said between them.
+    backend, recorder, caller = a_turn([finished()])
+    try:
+        assert await backend.ask("ricardi", "go", caller) == (
+            "(finished without saying anything)")
+    finally:
+        await backend.close()
+    assert kinds(recorder) == ["TurnStarted", "TurnEnded"]
+    assert recorder.events[-1].body.outcome == "done"
+
+
+@needs_sdk
+async def test_a_turn_that_raises_still_closes_with_failed():
+    backend, recorder, caller = a_turn([said("partly"), RuntimeError("the session died")])
+    try:
+        with pytest.raises(BackendError):
+            await backend.ask("ricardi", "go", caller)
+    finally:
+        await backend.close()
+    assert kinds(recorder)[-1] == "TurnEnded"
+    assert recorder.events[-1].body.outcome == "failed"
+
+
+@needs_sdk
+async def test_a_turn_that_times_out_closes_with_timed_out():
+    backend, recorder, caller = a_turn([said("partly"), 5.0, finished()], turn_timeout=0.05)
+    try:
+        with pytest.raises(BackendError, match="without finishing"):
+            await backend.ask("ricardi", "go", caller)
+    finally:
+        await backend.close()
+    assert recorder.events[-1].body.outcome == "timed_out"
+
+
+@needs_sdk
+async def test_a_cut_short_turn_says_so_in_the_outcome():
+    backend, recorder, caller = a_turn([said("partly"), finished("error_max_turns")])
+    try:
+        await backend.ask("ricardi", "go", caller)
+    finally:
+        await backend.close()
+    assert recorder.events[-1].body.outcome == "cut_short"
+
+
+@needs_sdk
+async def test_a_ceiling_reached_with_nothing_said_is_cut_short_not_failed():
+    # It raises, because there is no answer to give; but nothing broke, and a
+    # client that showed "failed" would send someone looking for a fault.
+    backend, recorder, caller = a_turn([finished("error_max_budget_usd")])
+    try:
+        with pytest.raises(BackendError, match="stopped early"):
+            await backend.ask("ricardi", "go", caller)
+    finally:
+        await backend.close()
+    assert recorder.events[-1].body.outcome == "cut_short"
+
+
+@needs_sdk
+async def test_a_turn_with_no_sink_behaves_exactly_as_before():
+    backend = Replaying([spec("ricardi")], [tool_call(command="deploy"), tool_result(),
+                                            said("hello"), finished()])
+    try:
+        assert await backend.ask("ricardi", "go", Caller()) == "hello"
+        assert await backend.ask("ricardi", "go") == "hello"
+    finally:
+        await backend.close()
+
+
+@needs_sdk
+async def test_a_sink_that_fails_does_not_cost_the_turn_its_answer():
+    class Broken:
+        async def emit(self, event):
+            raise RuntimeError("the client went away")
+
+    backend = Replaying([spec("ricardi")], [said("hello"), finished()])
+    caller = Caller(events=Stream("ricardi", Broken()))
+    try:
+        assert await backend.ask("ricardi", "go", caller) == "hello"
+    finally:
+        await backend.close()
