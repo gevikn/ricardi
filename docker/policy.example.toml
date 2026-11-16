@@ -138,6 +138,15 @@ path_under = "/workspace/ricardi"
 # "shell" covers whichever shell tool the platform uses: Bash on macOS, Linux
 # and WSL, PowerShell on Windows. Naming one of them directly covers nothing on
 # the other, which is a quiet way to end up with no rule at all.
+#
+# The other way to end up with a rule that covers nothing: a pattern is matched
+# against the whole command string, so it is anchored at the start. "git log*"
+# does not cover `git -C <path> log`, which is exactly what an agent writes when
+# it cannot be sure of its working directory -- and the refusal then reads as a
+# policy forbidding git log while its own list says git log is allowed. Hence
+# the -C forms below, spelled out rather than written as a blanket "git -C *":
+# that would also admit commit, checkout and rebase, which the denies further
+# down do not cover.
 [[rule]]
 name            = "ricardi: commands may be run here, and are announced"
 effect          = "allow"
@@ -154,6 +163,9 @@ command_matches = [
   "git status*",
   "git diff*",
   "git log*",
+  "git -C * status*",
+  "git -C * diff*",
+  "git -C * log*",
   "ls *",
   "cat *",
   "dir *",
