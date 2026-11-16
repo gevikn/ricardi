@@ -15,11 +15,15 @@ the same contract and the box takes no runtime dependency for it.
 # each body field's type from `f.type`, which is a real class only while
 # annotations are evaluated. The future import would turn it into the string
 # "str" and silently break the reader.
-from dataclasses import dataclass, fields
+import logging
+import secrets
+from dataclasses import dataclass, field, fields
 from datetime import datetime, timezone
-from typing import ClassVar, TypeVar
+from typing import Callable, ClassVar, Protocol, TypeVar, runtime_checkable
 
 from ricardi.policy import summarise
+
+log = logging.getLogger("ricardi.events")
 
 # Bumped only when an existing field changes meaning. A new kind is not a bump:
 # clients are lenient about kinds they do not know, which is the whole point.
@@ -312,3 +316,57 @@ def tool_started(tool: str, tool_input: dict, tool_use_id: str) -> ToolStarted:
 def tool_output(tool_use_id: str, text: str) -> ToolOutput:
     return ToolOutput(tool_use_id=tool_use_id, text=text[:MAX_OUTPUT],
                       truncated=len(text) > MAX_OUTPUT)
+
+
+def new_turn_id() -> str:
+    """Twelve hex characters: enough to tell turns apart in one name's stream."""
+    return secrets.token_hex(6)
+
+
+@runtime_checkable
+class EventSink(Protocol):
+    """Wherever events go: a socket, a renderer, a file. It may raise."""
+
+    async def emit(self, event: Event) -> None: ...
+
+
+@dataclass
+class Recorder:
+    """A sink that keeps what it is given, for tests to read back."""
+
+    events: list[Event] = field(default_factory=list)
+
+    async def emit(self, event: Event) -> None:
+        self.events.append(event)
+
+
+class Stream:
+    """One name's events, stamped in order and handed to a sink.
+
+    The counter lives on the instance, and a stream is made per name, so two
+    names never share a sequence. It starts at 1 and is never reused: an event
+    the sink dropped still spent its number, which shows a reader a gap rather
+    than a repeat.
+    """
+
+    def __init__(self, name: str, sink: EventSink, clock: Callable[[], str] = now) -> None:
+        self._name = name
+        self._sink = sink
+        self._clock = clock
+        self._seq = 0
+
+    async def emit(self, actor: str, body: object, *, turn: str = "") -> Event:
+        self._seq += 1
+        event = Event(Envelope(seq=self._seq, at=self._clock(), name=self._name,
+                               turn=turn, actor=actor), body)
+        try:
+            await self._sink.emit(event)
+        except Exception:
+            # Logged, not raised: a renderer that cannot be written to is no
+            # reason to abandon a turn the agent is already running on someone's
+            # machine. The same trade as a failed announcement in the SDK
+            # backend. Warning, not debug, because here the loss is a client
+            # missing events and someone has to be able to see that.
+            log.warning("could not deliver %s event %d for %s", type(event.body).__name__,
+                        event.envelope.seq, self._name, exc_info=True)
+        return event

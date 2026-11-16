@@ -2,6 +2,7 @@
 
 import dataclasses
 import json
+import logging
 import typing
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,8 +30,11 @@ from ricardi.events import (
     Thought,
     TurnEnded,
     TurnStarted,
+    Recorder,
+    Stream,
     Unknown,
     from_wire,
+    new_turn_id,
     now,
     to_wire,
 )
@@ -260,3 +264,70 @@ def test_every_kind_in_the_module_is_documented():
     text = (ROOT / "docs" / "events.md").read_text(encoding="utf-8")
     for kind in events._BODIES:
         assert f"`{kind}`" in text, kind
+
+
+class ExplodingSink:
+    def __init__(self) -> None:
+        self.attempts = 0
+
+    async def emit(self, event: Event) -> None:
+        self.attempts += 1
+        raise RuntimeError("the socket is closed")
+
+
+async def test_a_stream_stamps_sequence_and_time_and_name():
+    recorder = Recorder()
+    stream = Stream("ricardi", recorder, clock=lambda: "2026-11-10T15:04:05Z")
+    await stream.emit("agent", Said(text="one"), turn="t1")
+    await stream.emit("agent", Said(text="two"), turn="t1")
+    assert [e.envelope.seq for e in recorder.events] == [1, 2]
+    assert {e.envelope.name for e in recorder.events} == {"ricardi"}
+    assert {e.envelope.at for e in recorder.events} == {"2026-11-10T15:04:05Z"}
+    assert {(e.envelope.turn, e.envelope.actor) for e in recorder.events} == {("t1", "agent")}
+
+
+async def test_two_streams_for_two_names_do_not_share_a_sequence():
+    # A single global transcript on a box serving two names is a cross-project
+    # leak, which is what 1:1 exists to prevent.
+    recorder = Recorder()
+    await Stream("a", recorder).emit("agent", Said(text="x"))
+    await Stream("b", recorder).emit("agent", Said(text="y"))
+    assert [(e.envelope.name, e.envelope.seq) for e in recorder.events] == [("a", 1), ("b", 1)]
+
+
+async def test_a_sink_that_raises_does_not_stop_the_stream():
+    sink = ExplodingSink()
+    stream = Stream("ricardi", sink)
+    first = await stream.emit("agent", Said(text="one"))  # must not raise
+    second = await stream.emit("agent", Said(text="two"))
+    assert (first.body, second.body) == (Said(text="one"), Said(text="two"))
+    # The failed event still used its number, so a reader sees a gap, not a
+    # repeat, if the sink recovers.
+    assert [first.envelope.seq, second.envelope.seq] == [1, 2]
+    assert sink.attempts == 2
+
+
+async def test_a_sink_that_raises_is_logged_once_per_event(caplog):
+    stream = Stream("ricardi", ExplodingSink())
+    with caplog.at_level(logging.DEBUG, logger="ricardi"):
+        await stream.emit("agent", Said(text="one"))
+        await stream.emit("agent", Said(text="two"))
+    failures = [r for r in caplog.records if "the socket is closed" in r.getMessage()
+                or (r.exc_info and "the socket is closed" in str(r.exc_info[1]))]
+    assert len(failures) == 2
+    # A level a person would see: at debug, a dead transport would be silent.
+    assert all(r.levelno >= logging.WARNING for r in failures)
+    assert all("Said" in r.getMessage() and "ricardi" in r.getMessage() for r in failures)
+
+
+async def test_a_recorder_keeps_events_in_order():
+    recorder = Recorder()
+    stream = Stream("n", recorder)
+    sent = [await stream.emit("owner", Said(text=t)) for t in "abc"]
+    assert recorder.events == sent
+
+
+def test_a_turn_id_is_twelve_hex_characters_and_not_repeated():
+    ids = {new_turn_id() for _ in range(50)}
+    assert len(ids) == 50
+    assert all(len(i) == 12 and int(i, 16) >= 0 for i in ids)
