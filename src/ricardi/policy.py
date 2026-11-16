@@ -128,6 +128,13 @@ def _mask(match: re.Match[str]) -> str:
     """Replace just the `secret` group, keeping everything else the match ate."""
     whole, secret = match.span(), match.span("secret")
     text = match.string
+    if REDACTED in text[secret[0]:secret[1]]:
+        # An earlier pattern already masked this value, and it knew more about
+        # it than this one does: the shape patterns leave the token's prefix
+        # behind (`ghp_[redacted]`), and a later name pattern matching the same
+        # span would swallow that prefix and replace a leak you can act on with
+        # one you cannot.
+        return text[whole[0]:whole[1]]
     return text[whole[0]:secret[0]] + REDACTED + text[secret[1]:whole[1]]
 
 

@@ -624,6 +624,16 @@ def test_the_prefix_of_a_masked_token_survives_so_it_can_be_rotated():
     assert "ghp_" in out
 
 
+def test_the_prefix_survives_even_when_a_flag_name_also_claims_the_value():
+    # Two patterns match the same token here -- the shape, which keeps `ghp_`,
+    # and `--with-token`, which would take the whole value including the mask
+    # the shape just left. The flag pattern running second must not undo the
+    # more informative mask: "rotate the GitHub token" is actionable and
+    # "rotate something" is not.
+    out = P.summarise("Bash", {"command": f"gh auth login --with-token {TOKEN}"})
+    assert "ghp_[redacted]" in out
+
+
 # Built from a prefix and filler rather than written out as literals. Two
 # reasons, and the second one cost real time: a credential-shaped literal in a
 # test file gets the whole push rejected by secret scanning, and writing one by
