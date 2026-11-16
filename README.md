@@ -258,8 +258,10 @@ indistinguishable from the box being switched off. Every real turn counts as a
 check, so on a channel in use the answer arrives with the first person who
 notices; the hourly probe is there for the weekend when nobody asks.
 
-Every command an agent runs is posted into the thread as it starts, summarised,
-never with its arguments. It is a **record, not a checkpoint** — nothing waits
+Every command an agent runs is posted into the thread as it starts, summarised
+to one line: the command, path, pattern or URL the call was given, capped at 300
+characters, and nothing else it carried. It is a **record, not a checkpoint** —
+nothing waits
 for a reply and there is no way to veto from Slack. It makes use visible, not
 reversible. An `announce` obligation on a rule is how a policy used to single a
 command out for this; every call is posted now, so it adds nothing to what the
