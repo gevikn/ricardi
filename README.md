@@ -258,8 +258,10 @@ indistinguishable from the box being switched off. Every real turn counts as a
 check, so on a channel in use the answer arrives with the first person who
 notices; the hourly probe is there for the weekend when nobody asks.
 
-Every command an agent runs is posted into the thread as it starts, summarised,
-never with its arguments. It is a **record, not a checkpoint** — nothing waits
+Every command an agent runs is posted into the thread as it starts, summarised
+to one line: the command, path, pattern or URL the call was given, capped at 300
+characters, and nothing else it carried. It is a **record, not a checkpoint** —
+nothing waits
 for a reply and there is no way to veto from Slack. It makes use visible, not
 reversible. An `announce` obligation on a rule is how a policy used to single a
 command out for this; every call is posted now, so it adds nothing to what the
@@ -268,6 +270,14 @@ the audit log at `state/audit.jsonl` (rotated by size), one JSON object per deci
 everything that was refused and so never appeared in the channel at all. Tool
 inputs there are summarised and truncated, because a log that records every
 argument eventually records a password.
+
+Credentials in that summary are masked where they can be recognised — a value
+behind a name like `password` or `API_KEY`, a `Bearer` header, a password in a
+URL, and the token shapes GitHub, Slack, AWS, Google and Anthropic issue. The
+name survives and the value does not, so a refusal still says what you got
+wrong. Treat this as a net and not a guarantee: **a secret with no recognisable
+name and no known shape still reaches the channel and the log.** The same
+masking covers refusal messages in Slack, because they quote the command too.
 
 ### A trap worth knowing
 

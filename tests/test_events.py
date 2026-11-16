@@ -245,6 +245,20 @@ def test_a_tool_event_carries_the_summary_of_its_input_and_nothing_structural():
     assert "s3cret" not in repr(wire)
 
 
+def test_a_credential_in_a_command_does_not_reach_the_wire():
+    # The stream is the reader with the most consumers ahead of it -- Slack
+    # today, a browser and a terminal next -- so the masking `summarise` does
+    # is pinned here too, at the layer that leaves the process, and not only
+    # where it is implemented.
+    token = "ghp_" + "A1b2" * 9
+    started = tool_started("Bash", {"command": f"gh auth login --with-token {token}"},
+                           "tu_3")
+    wire = to_wire(Event(Envelope(1, now(), "n", "t", "agent"), started))
+    assert token not in json.dumps(wire)
+    # The prefix stays: a leak you cannot name is a credential you cannot rotate.
+    assert "ghp_[redacted]" in started.summary
+
+
 def test_a_tool_with_no_summarisable_input_is_still_identified():
     started = tool_started("TodoWrite", {"todos": [{"a": 1}]}, "tu_2")
     assert started.tool == "TodoWrite"

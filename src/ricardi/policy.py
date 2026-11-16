@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import fnmatch
 import os
+import re
 import tomllib
 from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
@@ -61,6 +62,92 @@ _WRITING_LOWER = frozenset(t.lower() for t in WRITING_TOOLS)
 _PATH_KEYS = ("file_path", "path", "notebook_path")
 # Keys worth quoting back to the channel when announcing what is about to run.
 _SUMMARY_KEYS = ("command", "file_path", "path", "pattern", "url")
+
+# What replaces a secret's value. Short, because it has to fit inside a command
+# that still needs to be readable.
+REDACTED = "[redacted]"
+
+# Names that mean "the next thing is a credential". Deliberately short: `auth`
+# would eat `Authorization:` and `--author`, `pwd` is a command people run, and
+# a name that fires on ordinary flags costs more than the secret it catches.
+_SECRET_NAME = (
+    r"(?:api[-_]?key|access[-_]?key|private[-_]?key|session[-_]?key"
+    r"|secret|password|passwd|token|credential)"
+)
+
+# One unquoted value. Quotes are excluded as well as separators: a masked
+# command is still one someone may copy, and eating the closing quote leaves
+# them a command that will not parse with nothing to say the mask did it.
+_VALUE = r"""[^\s,;&|'"]+"""
+
+# Applied in order to the summary text, each masking its `secret` group and
+# leaving the rest of its match alone. A net, not a guarantee: a credential
+# with no recognisable name and no known shape still reaches the reader, which
+# is why the docs tell people not to type one rather than promising this
+# catches it.
+_SECRETS: tuple[re.Pattern[str], ...] = (
+    # Before the name=value rule below, which would otherwise mask the word
+    # "Bearer" and leave the token sitting next to it.
+    re.compile(rf"bearer\s+(?P<secret>{_VALUE})", re.I),
+    # scheme://user:secret@host -- the host and the user are what a reader
+    # needs; the middle field is never anything but a password.
+    re.compile(r"://[^\s:/@]+:(?P<secret>[^\s@/]+)@"),
+    # Known credential shapes, whatever introduced them, because the commonest
+    # accident is a token pasted bare. The prefix stays: it names which
+    # credential to go and rotate, and is not itself secret.
+    re.compile(r"\b(?:gh[pousr]_|github_pat_)(?P<secret>[A-Za-z0-9_]{16,})"),
+    re.compile(r"\b(?:xox[abeprst]-|xapp-)(?P<secret>[A-Za-z0-9-]{10,})"),
+    # Hyphens allowed in the tail: a real Anthropic key is `sk-ant-api03-…`,
+    # and an alphanumeric-only tail stops at that first hyphen and masks
+    # nothing. Length carries the discrimination instead -- 24 is well past any
+    # hyphenated name beginning "sk-" and well inside what providers issue
+    # (OpenAI 48, Anthropic ~100).
+    re.compile(r"\bsk-(?P<secret>[A-Za-z0-9][A-Za-z0-9_-]{23,})"),
+    re.compile(r"\bAKIA(?P<secret>[0-9A-Z]{16})\b"),
+    # 35 is the shape Google issues; open-ended so a longer one still masks
+    # rather than leaking whole on a near-miss.
+    re.compile(r"\bAIza(?P<secret>[0-9A-Za-z_-]{35,})"),
+    # NAME=value and NAME: value, with any prefix, so GH_TOKEN and --api-key=
+    # are both covered.
+    re.compile(
+        rf"[\w.-]*{_SECRET_NAME}[\w.-]*\s*[=:]\s*"
+        rf"""(?P<secret>"[^"]*"|'[^']*'|{_VALUE})""",
+        re.I,
+    ),
+    # --password value, quoted or not. `(?!-)` on the bare form only, so a flag
+    # given no value does not swallow the flag that follows it.
+    re.compile(
+        rf"--[\w-]*{_SECRET_NAME}[\w-]*\s+"
+        rf"""(?P<secret>"[^"]*"|'[^']*'|(?!-){_VALUE})""",
+        re.I,
+    ),
+)
+
+
+def _mask(match: re.Match[str]) -> str:
+    """Replace just the `secret` group, keeping everything else the match ate."""
+    whole, secret = match.span(), match.span("secret")
+    text = match.string
+    if REDACTED in text[secret[0]:secret[1]]:
+        # An earlier pattern already masked this value, and it knew more about
+        # it than this one does: the shape patterns leave the token's prefix
+        # behind (`ghp_[redacted]`), and a later name pattern matching the same
+        # span would swallow that prefix and replace a leak you can act on with
+        # one you cannot.
+        return text[whole[0]:whole[1]]
+    return text[whole[0]:secret[0]] + REDACTED + text[secret[1]:whole[1]]
+
+
+def redact(text: str) -> str:
+    """Mask credentials in text about to be shown to a person.
+
+    Best effort, and the tests say so: the valuable half of them assert that an
+    ordinary command comes back untouched, because a masker that mangles the
+    commands people need to read costs more than it saves.
+    """
+    for pattern in _SECRETS:
+        text = pattern.sub(_mask, text)
+    return text
 
 
 # A person's tier on a name, ascending. Absence is the floor (rank 0). `exec`
@@ -169,11 +256,20 @@ class PolicyError(Exception):
 
 
 def summarise(tool: str, tool_input: dict[str, Any]) -> str:
-    """A one-line description of a tool call, for the channel to see."""
+    """A one-line description of a tool call, for the channel to see.
+
+    The one place a tool's own argument text becomes something a person reads --
+    the channel, every refusal reason, and the audit log all come through here --
+    so masking credentials is done here too, once, rather than in each reader.
+    """
     for key in _SUMMARY_KEYS:
         value = tool_input.get(key)
         if isinstance(value, str) and value.strip():
             text = " ".join(value.split())
+            # Before the cap, not after: cutting first can leave the front of a
+            # token in the channel, which is still worth rotating and reads as
+            # though nothing leaked.
+            text = redact(text)
             if len(text) > 300:
                 text = text[:300] + "…"
             return f"{tool}: {text}"

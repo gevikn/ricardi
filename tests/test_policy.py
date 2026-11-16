@@ -445,9 +445,11 @@ def test_the_git_c_form_does_not_become_a_way_to_change_the_checkout(
 def test_the_shipped_example_uses_the_alias_not_a_platform_name():
     # The example is what people copy; a copied rule naming one shell is the
     # trap this alias exists to close.
-    import io
+    from pathlib import Path
 
-    body = io.open("policy.example.toml", encoding="utf-8").read()
+    # read_text rather than io.open(...).read(): the latter left the handle to
+    # the garbage collector, which is a ResourceWarning under -W error.
+    body = Path("policy.example.toml").read_text(encoding="utf-8")
     assert 'tools           = ["shell"]' in body
     assert '"PowerShell"' not in body
 
@@ -592,3 +594,150 @@ def test_every_key_the_rule_dataclass_names_is_accepted(tmp_path):
         body.append(f'{f.name} = ["x"]')
     path = write(tmp_path, "\n".join(body) + "\n")
     assert P.load(path).rules[0].effect == "allow"
+
+
+# Assembled, not written out, so no credential-shaped literal sits in this file
+# for secret scanning to reject the push over. See TOKEN_SHAPES below.
+TOKEN = "ghp_" + "A1b2" * 9
+
+# `summarise` is the one place a tool's own argument text becomes something a
+# person reads: the channel, every refusal reason, and the audit log all go
+# through it. So a secret typed on a command line reaches all three unless it
+# is masked here. These pin the masking, and -- the half that matters more --
+# pin that an ordinary command is left exactly as it was typed.
+
+
+def test_a_bare_provider_token_does_not_survive_the_summary():
+    # The commonest accident: a token pasted straight onto a command line,
+    # introduced by nothing a pattern could key on.
+    out = P.summarise("Bash", {"command": f"gh auth login --with-token {TOKEN}"})
+    assert TOKEN not in out
+    assert TOKEN.removeprefix("ghp_") not in out
+    # The command still has to be legible: a reader needs to know what ran.
+    assert "gh auth login" in out
+
+
+def test_the_prefix_of_a_masked_token_survives_so_it_can_be_rotated():
+    # Knowing *which* credential leaked is the whole value of the line that
+    # tells you it did.
+    out = P.summarise("Bash", {"command": f"curl -H 'X: {TOKEN}'"})
+    assert "ghp_" in out
+
+
+def test_the_prefix_survives_even_when_a_flag_name_also_claims_the_value():
+    # Two patterns match the same token here -- the shape, which keeps `ghp_`,
+    # and `--with-token`, which would take the whole value including the mask
+    # the shape just left. The flag pattern running second must not undo the
+    # more informative mask: "rotate the GitHub token" is actionable and
+    # "rotate something" is not.
+    out = P.summarise("Bash", {"command": f"gh auth login --with-token {TOKEN}"})
+    assert "ghp_[redacted]" in out
+
+
+# Built from a prefix and filler rather than written out as literals. Two
+# reasons, and the second one cost real time: a credential-shaped literal in a
+# test file gets the whole push rejected by secret scanning, and writing one by
+# hand is how the Anthropic case came to be wrong. The first version of this
+# list said `sk-ant-api03` with no hyphen after it; a real key is
+# `sk-ant-api03-<...>`, the pattern's tail stopped at that hyphen, and the test
+# passed against a shape no provider issues while a real key went through
+# unmasked. The shape is the thing under test, so it is spelled out as a shape.
+TOKEN_SHAPES = [
+    "ghp_" + "A1b2" * 9,
+    "github_pat_" + "11AB" * 6,
+    "xoxb-" + "1234567890-" + "AbCd" * 6,
+    "xapp-1-" + "A01B" * 6,
+    "sk-ant-api03-" + "Zz09" * 20,
+    "sk-" + "Ab12" * 12,
+    # AWS's own published example key, not a real one.
+    "AKIA" + "IOSFODNN7EXAMPLE",
+    # AIza plus exactly the 35 characters Google issues.
+    "AIza" + "Sy12" * 8 + "abc",
+]
+
+
+@pytest.mark.parametrize("secret", TOKEN_SHAPES)
+def test_each_provider_token_shape_is_masked(secret):
+    out = P.summarise("Bash", {"command": f"./deploy.sh {secret}"})
+    assert secret not in out, out
+
+
+@pytest.mark.parametrize("command", [
+    f"GH_TOKEN={TOKEN} gh pr list",
+    "export API_KEY=s3cr3t-value-here",
+    "psql --password hunter2 -h db",
+    "curl -H 'Authorization: Bearer abc.def.ghi' https://api.example.com",
+    "mysql --password=hunter2",
+    'docker login -u me --secret "hunter2"',
+])
+def test_a_named_secret_is_masked_however_it_was_introduced(command):
+    out = P.summarise("Bash", {"command": command})
+    for leak in ("hunter2", "s3cr3t-value-here", "abc.def.ghi", "A1b2C3d4E5f6G7h8J9k0"):
+        assert leak not in out, out
+
+
+def test_the_name_of_a_masked_secret_survives():
+    # "something was masked here" is not enough: a person reading a refusal
+    # needs to see that it was the password and not the host that they got
+    # wrong.
+    out = P.summarise("Bash", {"command": "psql --password hunter2 -h db"})
+    assert "--password" in out
+    assert "-h db" in out
+
+
+def test_a_password_in_a_url_is_masked_and_the_host_is_not():
+    # Asserted as the whole expected line rather than as three substring
+    # checks. Stronger -- it pins where the mask lands, not just that the host
+    # survives somewhere -- and `"db.example.com" in out` is indistinguishable
+    # from a URL allow-list check, which is what CodeQL reads it as.
+    out = P.summarise("Bash", {"command": "psql postgres://admin:hunter2@db.example.com/app"})
+    assert out == "Bash: psql postgres://admin:[redacted]@db.example.com/app"
+
+
+@pytest.mark.parametrize("command", [
+    "git -C /workspace/ricardi log --oneline -5",
+    "ls -la /workspace/ricardi/src",
+    "npm install --save-dev jest",
+    "pytest -q tests/test_policy.py",
+    "ssh -i ~/.ssh/id_ed25519 deploy@host",
+    "grep -rn 'password' src/",
+    "curl https://api.example.com/v1/things",
+    # The cost of letting the "sk-" tail contain hyphens, bounded by length:
+    # a hyphenated name beginning "sk-" must stay untouched.
+    "npm install sk-learn-helper-utils",
+])
+def test_an_ordinary_command_is_passed_through_untouched(command):
+    # The expensive failure is not a missed secret, it is a masker that eats
+    # commands people need to read. Every one of these must come back whole.
+    assert P.summarise("Bash", {"command": command}) == f"Bash: {command}"
+
+
+def test_masking_happens_before_the_length_cap_so_no_half_secret_survives():
+    # Cutting first could leave the front of a token in the channel, which is
+    # still enough to be worth rotating and reads as if nothing leaked.
+    secret = "ghp_" + "Z" * 40
+    out = P.summarise("Bash", {"command": "echo " + "x" * 290 + " " + secret})
+    assert "ZZZZ" not in out
+
+
+def test_masking_a_summary_does_not_change_what_policy_allows():
+    # summarise() builds text for people; if a decision ever read it, masking
+    # would silently change which commands run.
+    import asyncio
+
+    pol = P.RulesPolicy([rule(tools=["Bash"], command_matches=["gh pr list*"])])
+    req = tool(command=f"gh pr list --limit 5 --token {TOKEN}")
+    assert asyncio.run(pol.decide(req)).allow is True
+    denied = tool(command=f"rm -rf / --token {TOKEN}")
+    assert asyncio.run(pol.decide(denied)).allow is False
+
+
+def test_masking_leaves_the_quoting_around_it_intact():
+    # A masked command is still a command someone may copy. Eating the closing
+    # quote turns it into one that will not parse, and the reader has no way to
+    # tell that the mask did it.
+    out = P.summarise("Bash", {
+        "command": f"curl -H 'Authorization: Bearer {TOKEN}' https://api.example.com",
+    })
+    assert TOKEN not in out
+    assert out.count("'") == 2, out
