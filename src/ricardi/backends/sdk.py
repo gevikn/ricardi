@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from ricardi.backends.base import Agent, AgentBackend, BackendError, Caller
 from ricardi.config import AgentSpec
 from ricardi.events import (
+    Refused,
     Said,
     Stream,
     Thought,
@@ -270,9 +271,19 @@ class SdkBackend(AgentBackend):
         async def gate(payload: dict, tool_use_id: str | None, context: object):
             tool = str(payload.get("tool_name") or "")
             tool_input = dict(payload.get("tool_input") or {})
-            if self._policy is None:
-                return decided(False, "No policy is configured, so no tool is permitted.")
             caller = live.caller or Caller()
+
+            # Observation only: every call below sits beside a decision, never
+            # in front of one, and a gate with no sink skips it entirely.
+            async def emit(body: object) -> None:
+                if caller.events is not None:
+                    await caller.events.emit("ricardi", body, turn=caller.turn)
+
+            if self._policy is None:
+                reason = "No policy is configured, so no tool is permitted."
+                await emit(Refused(rule="no policy", reason=reason, tier="",
+                                   tool=tool, target=""))
+                return decided(False, reason)
             request = Request(
                 action="tool",
                 principal=caller.principal,
@@ -290,13 +301,20 @@ class SdkBackend(AgentBackend):
             except Exception:
                 # A policy that errors must not become a policy that permits.
                 log.exception("policy failed on %s for %s", tool, live.spec.name)
-                return decided(
-                    False, "I couldn't check whether that's permitted, so I didn't run it."
-                )
+                reason = "I couldn't check whether that's permitted, so I didn't run it."
+                await emit(Refused(rule="policy error", reason=reason, tier="",
+                                   tool=tool, target=""))
+                return decided(False, reason)
 
             if not decision.allow:
                 log.info("denied %s for %s: %s", tool, live.spec.name, decision.reason)
+                await emit(Refused(rule=decision.rule, reason=decision.reason,
+                                   tier=decision.tier, tool=tool, target=""))
                 return decided(False, decision.reason)
+
+            if "announce" in decision.obligations and caller.events is not None:
+                # Built by the factory so the arguments are summarised, not carried.
+                await emit(tool_started(tool, request.tool_input, tool_use_id or ""))
 
             if "announce" in decision.obligations and caller.notice is not None:
                 # Posted before the command runs, but this is a record, not a
@@ -329,7 +347,9 @@ class SdkBackend(AgentBackend):
         )
 
         stream: Stream | None = live.caller.events if live.caller else None
-        turn = new_turn_id()
+        # The caller's id when it has one, so the gate's events and the turn's
+        # are one story; minted only when nobody named the turn.
+        turn = (live.caller.turn if live.caller else "") or new_turn_id()
 
         async def emit(body: object, actor: str = "agent") -> None:
             if stream is not None:

@@ -29,6 +29,10 @@ class Caller:
     # watching: a turn with no stream must run exactly as it did before there
     # were events at all, so this is observation and never a dependency.
     events: Stream | None = None
+    # The id of the turn this caller is for, so an event from the gate -- which
+    # sees only the Caller -- ties to the turn that caused it. Empty means the
+    # backend mints one, which is how a turn behaved before callers named theirs.
+    turn: str = ""
 
 
 @dataclass(frozen=True)
