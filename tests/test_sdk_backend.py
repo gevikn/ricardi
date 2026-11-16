@@ -14,7 +14,15 @@ import pytest
 from ricardi.backends.base import BackendError
 from ricardi.backends.sdk import SdkBackend, assemble
 from ricardi.config import AgentSpec
-from ricardi.events import Recorder, Stream, ToolFinished, ToolStarted, to_wire
+from ricardi.events import (
+    MAX_OUTPUT,
+    Recorder,
+    Stream,
+    ToolFinished,
+    ToolOutput,
+    ToolStarted,
+    to_wire,
+)
 
 
 def spec(name="scout", cwd="."):
@@ -462,6 +470,48 @@ async def test_a_tool_result_is_tied_to_its_call_and_timed():
     ended = next(e.body for e in recorder.events if isinstance(e.body, ToolFinished))
     assert (ended.tool_use_id, ended.tool, ended.ok) == ("tu_1", "Bash", True)
     assert isinstance(ended.ms, int) and ended.ms >= 0
+
+
+@needs_sdk
+async def test_a_result_in_the_apis_list_of_parts_comes_through_as_its_text():
+    # The shape the real SDK commonly sends, and the one no other test here
+    # covers: every other `tool_result` passes a plain string. Only the text
+    # parts are carried -- an image part would put a megabyte of base64 into
+    # an event nobody could render.
+    backend, recorder, caller = a_turn([
+        tool_call(command="deploy"),
+        tool_result(content=[
+            {"type": "text", "text": "first"},
+            {"type": "image", "source": {"data": "AAAA"}},
+            {"type": "text", "text": "second"},
+        ]),
+        finished(),
+    ])
+    try:
+        await backend.ask("ricardi", "go", caller)
+    finally:
+        await backend.close()
+    output = next(e.body for e in recorder.events if isinstance(e.body, ToolOutput))
+    assert output.text == "first\nsecond"
+    assert "AAAA" not in json.dumps([to_wire(e) for e in recorder.events])
+
+
+@needs_sdk
+async def test_output_longer_than_the_cap_is_cut_and_says_it_was():
+    # `truncated` is asserted False everywhere else, so the branch that sets it
+    # has never run. A client sizing a frame depends on this cap holding.
+    backend, recorder, caller = a_turn([
+        tool_call(command="build"),
+        tool_result(content="x" * (MAX_OUTPUT + 500)),
+        finished(),
+    ])
+    try:
+        await backend.ask("ricardi", "go", caller)
+    finally:
+        await backend.close()
+    output = next(e.body for e in recorder.events if isinstance(e.body, ToolOutput))
+    assert len(output.text) == MAX_OUTPUT
+    assert output.truncated is True
 
 
 @needs_sdk

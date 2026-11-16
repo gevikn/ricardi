@@ -89,10 +89,11 @@ def test_the_kinds_this_renderer_stays_quiet_about_render_empty():
         assert render(event(body)) == ""
 
 
-def test_every_kind_has_a_decided_rendering():
-    # A kind added later must not fall through to a silent default.
-    for kind in _BODIES:
-        assert kind in RENDERERS
+def test_every_kind_has_a_decided_rendering_and_no_renderer_outlives_its_kind():
+    # Both directions. A kind added later must not fall through to a silent
+    # default; and a kind renamed or removed must not leave an entry here that
+    # nothing can ever reach, which is how a renderer table rots.
+    assert set(RENDERERS) == set(_BODIES)
 
 
 def test_a_kind_this_renderer_does_not_know_renders_empty_rather_than_raising():

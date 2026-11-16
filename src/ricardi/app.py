@@ -398,6 +398,14 @@ class Ricardi:
         self, inbound: Inbound, agent: str, decision: Decision, target: str, turn: str
     ) -> None:
         reason = decision.reason or "That isn't permitted."
+        # Precondition: `decision` is always a denial here. Every caller is a
+        # deny path, which is what lets the substitution below be
+        # unconditional. `audit.py:record` does the same substitution but gates
+        # it on `decision.allow`, because it is handed both verdicts; if this
+        # ever gains a caller that is not a refusal, it needs that gate too --
+        # an allowed decision with no rule would otherwise be labelled
+        # "default deny" in the stream while the audit log called it nothing.
+        #
         # The stream gets the rule and the tier; the person gets the reason
         # alone. Who may see the rule is a renderer's decision, not this one's.
         # An unmatched deny reads "default deny", the same words audit.py logs.

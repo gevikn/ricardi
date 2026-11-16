@@ -211,11 +211,6 @@ def _check_bodies(bodies: dict[str, type]) -> None:
     partition key) included, and the event would be filed under the wrong agent
     without any error. Failing at import puts the mistake in the author's first
     run instead of in a transcript.
-
-    The wire form is flat, so such a field would overwrite the envelope's value
-    on write, `name` (the partition key) included, and the event would be
-    filed under the wrong agent without any error. Failing at import puts the
-    mistake in the author's first run instead of in a transcript.
     """
     for kind, cls in bodies.items():
         clash = _RESERVED & {f.name for f in fields(cls)}

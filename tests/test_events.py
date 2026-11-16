@@ -165,6 +165,22 @@ def test_now_is_rfc3339_utc_to_the_second():
     assert "." not in now()
 
 
+def test_now_really_is_utc_and_not_merely_shaped_like_it():
+    """Shape alone would pass with the `timezone.utc` dropped.
+
+    That is the one realistic regression here -- `datetime.now()` with no
+    argument formats identically and is the box's local time, which on this
+    project is hours out. Every `at` on the wire would then be wrong while
+    claiming a Z, and a client ordering two streams would interleave them
+    incorrectly with nothing to show for it.
+    """
+    from datetime import datetime, timezone
+
+    stamped = datetime.strptime(now(), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    drift = abs((datetime.now(timezone.utc) - stamped).total_seconds())
+    assert drift < 5, f"{stamped} is {drift}s from now; is it local time?"
+
+
 def test_a_version_this_reader_does_not_speak_is_refused_even_when_lenient():
     with pytest.raises(ValueError):
         from_wire({"v": SCHEMA_VERSION + 1, "seq": 1, "at": now(), "name": "n",
