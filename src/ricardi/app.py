@@ -8,9 +8,10 @@ import logging
 
 from ricardi import router
 from ricardi.backends.base import AgentBackend, BackendError, Caller
+from ricardi.events import EventSink, Refused, Stream
 from ricardi.grants import GrantError, GrantStore
 from ricardi.health import CredentialWatch, classify, describe
-from ricardi.policy import TIERS, ClosedPolicy, PolicyPoint, Request, Resource
+from ricardi.policy import TIERS, ClosedPolicy, Decision, PolicyPoint, Request, Resource
 from ricardi.store import ThreadBindings
 from ricardi.transports.base import Inbound, Transport
 
@@ -27,6 +28,7 @@ class Ricardi:
         policy: PolicyPoint | None = None,
         grants: GrantStore | None = None,
         health: CredentialWatch | None = None,
+        sink: EventSink | None = None,
     ):
         self.transport = transport
         self.backend = backend
@@ -42,6 +44,9 @@ class Ricardi:
         # Slack. None means nobody is watching it.
         self.health = health
         self._watching: asyncio.Task[None] | None = None
+        # Where events go. None means nobody is listening, and nothing is built.
+        self.sink = sink
+        self._streams: dict[str, Stream] = {}
 
     async def start(self) -> None:
         await self.transport.start(self.handle)
@@ -106,7 +111,7 @@ class Ricardi:
         if command.kind == "list":
             # The catalogue names the agents and what they can touch, so it is
             # worth gating rather than handing to anyone who asks.
-            if not await self._permit(inbound, "list"):
+            if not (await self._permit(inbound, "list"))[0]:
                 return
             await self._say(inbound, await self._agent_list())
             return
@@ -148,7 +153,7 @@ class Ricardi:
                 text = command.raw
             # Decided before binding: a refused request must not leave the
             # thread quietly pointed at an agent it may not use.
-            if not await self._permit(inbound, "ask", agent):
+            if not (await self._permit(inbound, "ask", agent))[0]:
                 return
             self.bindings.bind(inbound.thread, agent, command.flags)
             if not text:
@@ -170,7 +175,7 @@ class Ricardi:
                 "`tell <agent> <message>`.\n\n" + await self._agent_list(),
             )
             return
-        if not await self._permit(inbound, "ask", bound):
+        if not (await self._permit(inbound, "ask", bound))[0]:
             return
         # A reply may narrow the thread further; it can never widen it.
         self.bindings.bind(inbound.thread, bound, command.flags)
@@ -185,9 +190,10 @@ class Ricardi:
         """
         action = command.kind
         person = self._email_for(command.user)
-        if not await self._permit(
+        allowed, _ = await self._permit(
             inbound, action, command.agent, target=person, confers=command.tier
-        ):
+        )
+        if not allowed:
             return
         by = self._principal(inbound).email
         if self.grants is None:
@@ -270,6 +276,19 @@ class Ricardi:
             return
         await self.health.saw_failure(cause)
 
+    def _stream_for(self, name: str) -> Stream | None:
+        """The stream for one name, made on first use; None with no sink.
+
+        One per name, never one for the app: a box serves several agents, and a
+        sequence shared across them would let one project's watcher count
+        another's events.
+        """
+        if self.sink is None:
+            return None
+        if name not in self._streams:
+            self._streams[name] = Stream(name, self.sink)
+        return self._streams[name]
+
     async def _permit(
         self,
         inbound: Inbound,
@@ -278,8 +297,13 @@ class Ricardi:
         *,
         target: str = "",
         confers: str = "",
-    ) -> bool:
-        """The inbound enforcement point. Every path to an agent passes here."""
+    ) -> tuple[bool, Decision]:
+        """The inbound enforcement point. Every path to an agent passes here.
+
+        The Decision comes back with the verdict so the refusal's rule and tier
+        can reach the stream. Callers must read the first element: the pair
+        itself is always truthy.
+        """
         request = Request(
             action=action,
             principal=self._principal(inbound),
@@ -294,12 +318,29 @@ class Ricardi:
         except Exception:
             # Fail closed, and say so rather than going quiet.
             log.exception("policy failed for %s in %s", inbound.user, inbound.channel)
-            await self._refuse(inbound, "I couldn't check whether you're allowed.")
-            return False
+            reason = "I couldn't check whether you're allowed."
+            denied = Decision(allow=False, reason=reason, rule="policy error")
+            await self._refused(inbound, agent, denied, target)
+            return False, denied
         if not decision.allow:
-            await self._refuse(inbound, decision.reason or "That isn't permitted.")
-            return False
-        return True
+            await self._refused(inbound, agent, decision, target)
+            return False, decision
+        return True, decision
+
+    async def _refused(
+        self, inbound: Inbound, agent: str, decision: Decision, target: str
+    ) -> None:
+        reason = decision.reason or "That isn't permitted."
+        # The stream gets the rule and the tier; the person gets the reason
+        # alone. Who may see the rule is a renderer's decision, not this one's.
+        stream = self._stream_for(agent)
+        if stream is not None:
+            await stream.emit(
+                "ricardi",
+                Refused(rule=decision.rule, reason=reason, tier=decision.tier,
+                        tool="", target=target),
+            )
+        await self._refuse(inbound, reason)
 
     def _principal(self, inbound: Inbound):
         resolve = getattr(self.policy, "principal", None)

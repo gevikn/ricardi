@@ -310,3 +310,109 @@ async def test_a_refusal_inside_an_open_thread_stays_there():
     )
     thread, _, _ = transport.private[-1]
     assert thread == "T1"
+
+
+# -- an inbound refusal reaches the stream ---------------------------------
+from ricardi.events import Recorder as EventRecorder, Refused  # noqa: E402
+
+
+def _named_denial():
+    # A request no rule matches is denied with rule "" (the default). A named
+    # deny is what gives the event a rule to carry and the message one to leak.
+    from ricardi.policy import Rule, RulesPolicy
+
+    return RulesPolicy(
+        rules=[Rule(effect="deny", name="no asking here", actions=["ask"])],
+        roster={"u1": "tester@example.com"},
+    )
+
+
+def _grant_policy():
+    from ricardi.policy import Rule, RulesPolicy
+
+    return RulesPolicy(
+        rules=[Rule(effect="allow", actions=["list"])],
+        roster={"u1": "tester@example.com", "U2": "someone@example.com"},
+    )
+
+
+async def test_a_refused_request_emits_the_decision_not_just_the_reason():
+    # _permit discards the Decision today, so rule and tier cannot reach a
+    # transport. The refused person still sees only the reason.
+    sink = EventRecorder()
+    app = Ricardi(transport=PrivateRecorder(), backend=FakeBackend(), ack_after=30.0,
+                  policy=_named_denial(), sink=sink)
+    await app.handle(message("tell scout to read auth.py"))
+    event = sink.events[-1]
+    refused = event.body
+    assert isinstance(refused, Refused)
+    assert refused.rule and refused.tier == ""
+    assert refused.target == ""
+    assert event.envelope.name == "scout"
+
+
+async def test_a_refusal_naming_no_agent_uses_the_empty_name():
+    from ricardi.policy import RulesPolicy
+
+    sink = EventRecorder()
+    policy = RulesPolicy(rules=[], roster={"u1": "tester@example.com"})
+    app = Ricardi(transport=PrivateRecorder(), backend=FakeBackend(), ack_after=30.0,
+                  policy=policy, sink=sink)
+    await app.handle(message("list agents"))
+    assert sink.events[-1].envelope.name == ""
+    assert isinstance(sink.events[-1].body, Refused)
+
+
+async def test_streams_are_per_name_so_sequences_do_not_cross():
+    sink = EventRecorder()
+    app = Ricardi(transport=PrivateRecorder(), backend=FakeBackend(), ack_after=30.0,
+                  policy=closed_policy(), sink=sink)
+    await app.handle(message("tell scout to read auth.py"))
+    await app.handle(message("tell deployer to ship it", thread="t2"))
+    await app.handle(message("tell scout to read b.py", thread="t3"))
+    seqs = [(e.envelope.name, e.envelope.seq) for e in sink.events]
+    assert seqs == [("scout", 1), ("deployer", 1), ("scout", 2)]
+
+
+async def test_a_refused_grant_carries_who_it_was_aimed_at():
+    sink = EventRecorder()
+    app = Ricardi(transport=PrivateRecorder(), backend=FakeBackend(), ack_after=30.0,
+                  policy=_grant_policy(), sink=sink)
+    await app.handle(message("grant <@U2> read on scout"))
+    assert sink.events[-1].body.target == "someone@example.com"
+
+
+async def test_the_person_still_sees_the_reason_and_not_the_rule():
+    sink = EventRecorder()
+    transport = PrivateRecorder()
+    app = Ricardi(transport=transport, backend=FakeBackend(), ack_after=30.0,
+                  policy=_named_denial(), sink=sink)
+    await app.handle(message("tell scout to read auth.py"))
+    refused = sink.events[-1].body
+    assert refused.reason and transport.private[-1][2] == refused.reason
+    assert refused.rule == "no asking here"
+    assert refused.rule not in transport.private[-1][2]
+
+
+async def test_a_policy_failure_emits_a_refusal_and_still_refuses():
+    class Exploding:
+        async def decide(self, request):
+            raise RuntimeError("down")
+
+    sink = EventRecorder()
+    transport = PrivateRecorder()
+    backend = FakeBackend()
+    app = Ricardi(transport=transport, backend=backend, ack_after=30.0,
+                  policy=Exploding(), sink=sink)
+    await app.handle(message("tell scout to read auth.py"))
+    assert sink.events[-1].body.rule == "policy error"
+    assert backend.asked == [] and transport.private
+
+
+async def test_with_no_sink_a_refusal_still_refuses_and_emits_nothing():
+    transport = PrivateRecorder()
+    app = Ricardi(transport=transport, backend=FakeBackend(), ack_after=30.0,
+                  policy=closed_policy())
+    await app.handle(message("tell scout to read auth.py"))
+    assert transport.private
+    assert app._stream_for("scout") is None
