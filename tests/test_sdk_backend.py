@@ -580,6 +580,40 @@ async def test_a_turn_that_times_out_closes_with_timed_out():
     assert recorder.events[-1].body.outcome == "timed_out"
 
 
+class Suspending:
+    """A sink that yields to the loop on every event, as a socket does.
+
+    `Recorder` never suspends, so no test built on it can see a cancellation
+    that lands *inside* an emit -- and the first emit of a turn is the one
+    that, left outside the `finally`, opens a turn nothing ever closes.
+    """
+
+    def __init__(self, pause):
+        self.events = []
+        self._pause = pause
+
+    async def emit(self, event):
+        self.events.append(event)
+        await asyncio.sleep(self._pause)
+
+
+@needs_sdk
+async def test_a_turn_cancelled_while_it_opens_is_still_closed():
+    # The timeout lands in the middle of the TurnStarted emit, which only a
+    # sink that suspends can arrange. Move that emit back outside the try and
+    # the client is left holding a turn that opened and never ended.
+    sink = Suspending(pause=0.2)
+    backend = Replaying([spec("ricardi")], [said("hello"), finished()], turn_timeout=0.02)
+    caller = Caller(events=Stream("ricardi", sink))
+    try:
+        with pytest.raises(BackendError, match="without finishing"):
+            await backend.ask("ricardi", "go", caller)
+    finally:
+        await backend.close()
+    assert [type(e.body).__name__ for e in sink.events] == ["TurnStarted", "TurnEnded"]
+    assert sink.events[-1].body.outcome == "timed_out"
+
+
 @needs_sdk
 async def test_a_cut_short_turn_says_so_in_the_outcome():
     backend, recorder, caller = a_turn([said("partly"), finished("error_max_turns")])

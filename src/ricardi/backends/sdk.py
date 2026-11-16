@@ -343,12 +343,15 @@ class SdkBackend(AgentBackend):
         outcome = "done"
         answer = ""
 
-        # Opened before anything can fail, so the `finally` that closes the
-        # turn is never reached without this having been sent. "person" rather
-        # than "owner": the backend is given a principal, not a standing, and
-        # guessing the higher of the two would be the wrong way to guess.
-        await emit(TurnStarted(text=text), actor="person")
         try:
+            # Inside the try, not before it: a sink that suspends -- which is
+            # every real transport -- can be cancelled here, and a turn opened
+            # outside would then never be closed. The trade is a TurnEnded whose
+            # TurnStarted was lost, which a client can ignore, against a turn it
+            # is told began and never hears about again. "person" rather than
+            # "owner": the backend is given a principal, not a standing, and
+            # guessing the higher of the two would be the wrong way to guess.
+            await emit(TurnStarted(text=text), actor="person")
             await client.query(text)  # type: ignore[attr-defined]
             async for message in client.receive_response():  # type: ignore[attr-defined]
                 if isinstance(message, AssistantMessage):
