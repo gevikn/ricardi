@@ -676,10 +676,12 @@ def test_the_name_of_a_masked_secret_survives():
 
 
 def test_a_password_in_a_url_is_masked_and_the_host_is_not():
+    # Asserted as the whole expected line rather than as three substring
+    # checks. Stronger -- it pins where the mask lands, not just that the host
+    # survives somewhere -- and `"db.example.com" in out` is indistinguishable
+    # from a URL allow-list check, which is what CodeQL reads it as.
     out = P.summarise("Bash", {"command": "psql postgres://admin:hunter2@db.example.com/app"})
-    assert "hunter2" not in out
-    assert "db.example.com" in out
-    assert "admin" in out
+    assert out == "Bash: psql postgres://admin:[redacted]@db.example.com/app"
 
 
 @pytest.mark.parametrize("command", [
