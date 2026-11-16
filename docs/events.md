@@ -37,20 +37,32 @@ Example:
 The first thing a client needs is a rule for when a turn is over, and whether
 it can be told twice.
 
-**Exactly one `turn_ended` per agent turn, and it is that turn's last event.**
-Not two, and never none. The backend emits it from a `finally` that every way
-out of a turn passes through — a result, an exception, its own deadline, a
-cancellation from somewhere else — so a turn left open with the client spinning
-is impossible rather than merely unlikely. Its `outcome` says which of those it
-was: `done`, `cut_short` (a ceiling was reached, or somebody stopped it),
-`failed` (something broke) or `timed_out` (the turn ran past its deadline). A
-client may treat `turn_ended` as final for that `turn` id and release whatever
-it was holding.
+**Exactly one `turn_ended` per agent turn, and it is the last event the agent
+emits for it.** Not two, and never none. The backend emits it from a `finally`
+that every way out of a turn passes through — a result, an exception, its own
+deadline, a cancellation from somewhere else — so a turn left open with the
+client spinning is impossible rather than merely unlikely. Its `outcome` says
+which of those it was: `done`, `cut_short` (a ceiling was reached, or somebody
+stopped it), `failed` (something broke) or `timed_out` (the turn ran past its
+deadline).
+
+**Ricardi may still speak under that `turn` id afterwards, and when something
+went wrong she usually does.** A turn that times out, hits a ceiling with
+nothing said, or breaks is normally followed by a `said` carrying what the
+failure meant — the agent cannot explain its own death, so Ricardi does it.
+That `said` arrives after `turn_ended`, under the same `turn` id, on the same
+stream.
+
+So `turn_ended` means *the agent* has finished, not that the `turn` id is
+closed. A client that treats it as final and releases its state will drop the
+one line explaining the failure, in exactly the cases where that line is the
+only thing worth reading. Render what follows; release on a later turn or a
+timer of your own, not on `turn_ended` alone.
 
 **`turn_started` comes first when it comes at all.** A turn that runs an agent
 opens with one. A message Ricardi answers herself — help, an agent listing, a
-refusal — has no `turn_started`: it still carries a `turn` id, and it still
-ends, but there is no agent turn to open. A client must therefore not wait for
+refusal — has no `turn_started` and no `turn_ended` either: it carries a `turn`
+id, but there is no agent turn to open or close. A client must therefore not wait for
 a `turn_started` before rendering, and must not treat its absence as a lost
 event. There is also one narrow case where a turn ends without having started:
 the opening emit can be cancelled mid-flight, and the turn is closed anyway

@@ -359,8 +359,7 @@ class Stream:
         except Exception:
             # Logged, not raised: a renderer that cannot be written to is no
             # reason to abandon a turn the agent is already running on someone's
-            # machine. The same trade as a failed announcement in the SDK
-            # backend. Warning, not debug, because here the loss is a client
+            # machine. Warning, not debug, because here the loss is a client
             # missing events and someone has to be able to see that.
             log.warning("could not deliver %s event %d for %s", type(event.body).__name__,
                         event.envelope.seq, self._name, exc_info=True)
