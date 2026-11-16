@@ -2,6 +2,7 @@
 
 import dataclasses
 import json
+import typing
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -187,20 +188,41 @@ def test_an_envelope_field_missing_is_refused():
                    "actor": "agent", "kind": "said", "text": "x"})
 
 
-def test_no_body_can_hold_a_mapping():
-    # Structural, not behavioural: "raw arguments never enter the stream" is a
-    # property of the vocabulary, not a promise each caller remembers.
+def test_every_body_field_is_a_scalar_or_a_tuple_of_strings():
+    # Structural: nothing that can hold a mapping or a nested structure exists
+    # in the vocabulary. The guard runs at import (`_check_bodies`); this pins
+    # that the real bodies satisfy it and that it is the allowlist doing it.
+    allowed = {str, int, bool, tuple[str, ...]}
     for body in events._BODIES.values():
         for f in dataclasses.fields(body):
-            assert "dict" not in str(f.type).lower(), (body.__name__, f.name)
+            assert f.type in allowed, (body.__name__, f.name)
 
 
-def test_a_tool_event_carries_only_the_summary_of_its_input():
-    command = {"command": "psql -U admin -W hunter2"}
+@pytest.mark.parametrize("annotation", [dict, dict[str, str], typing.Mapping[str, str],
+                                        typing.Any, object, list[str],
+                                        tuple[tuple[str, str], ...], tuple[int, ...]])
+def test_a_body_field_of_an_unsupported_type_is_refused_at_definition(annotation):
+    @dataclass(frozen=True)
+    class Loose:
+        data: annotation
+        KIND = "loose"
+
+    with pytest.raises(TypeError, match=r"loose\.data"):
+        events._check_bodies({"loose": Loose})
+
+
+def test_a_tool_event_carries_the_summary_of_its_input_and_nothing_structural():
+    # The summary is argument *text* (the channel shows the same, so a person
+    # approving a command sees it); what must not appear is the argument
+    # *structure*: no key of the input, no nested value.
+    command = {"command": "psql -U admin -W hunter2", "env": {"PGPASSWORD": "s3cret"}}
     started = tool_started("Bash", command, "tu_1")
     assert started.summary == summarise("Bash", command)
     wire = to_wire(Event(Envelope(1, now(), "n", "t", "agent"), started))
-    assert "tool_input" not in wire and "command" not in wire
+    assert set(wire) == {"v", "seq", "at", "name", "turn", "actor", "kind",
+                         "tool", "summary", "tool_use_id"}
+    assert not any(isinstance(v, (dict, list)) for v in wire.values())
+    assert "s3cret" not in repr(wire)
 
 
 def test_a_tool_with_no_summarisable_input_is_still_identified():

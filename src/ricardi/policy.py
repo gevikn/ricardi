@@ -532,7 +532,9 @@ class RulesPolicy:
 
     async def _decide_filled(self, request: Request) -> Decision:
         # Split from `decide` only so that every return below, there are many,
-        # reaches the caller with the tier stamped on it in one place.
+        # reaches the caller with the tier stamped on it in one place. The
+        # storeless refusal in `decide` returns before this and is deliberately
+        # unstamped: with no store there is no tier to attest.
         # Canonicalise the keys every later step compares, once, here. The
         # conferral check and the grant store already normalise their own
         # arguments, but `Rule.matches` goes through `_glob`, which lowercases

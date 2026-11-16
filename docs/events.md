@@ -64,11 +64,14 @@ Example:
 | field         | type   | meaning |
 |---------------|--------|---------|
 | `tool`        | string | the tool's name |
-| `summary`     | string | a one-line description of the call; never the arguments |
+| `summary`     | string | a one-line description of the call, including the text of its main argument (a command, a path), capped at 300 characters |
 | `tool_use_id` | string | ties this to its `tool_output` and `tool_finished` |
 
-Raw tool input never enters the stream: a log that records every argument
-eventually records a password, so no kind has a field that could hold one.
+`summary` carries argument *text*, as the Slack channel already shows it: a
+person approving a command has to see the command. A secret passed on a command
+line will therefore appear here. What never enters the stream is the argument
+*structure*: no kind has a field that can hold a mapping or a list of
+arguments, so a client never receives the tool input object.
 
 ### `tool_output`
 

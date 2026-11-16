@@ -191,8 +191,22 @@ _ENVELOPE_FIELDS = tuple(f.name for f in fields(Envelope))
 _RESERVED = frozenset({"v", "kind", *_ENVELOPE_FIELDS})
 
 
+# The only annotations a body field may have. An allowlist rather than a ban on
+# dict: respelled (Mapping, Any, object, nested tuples) a ban is evaded, and
+# the reader has no mapping guard, so the annotation is all that stands between
+# a future kind and structured argument data. It also names every type
+# `from_wire` knows how to read, so an unreadable one fails here, not there.
+_FIELD_TYPES: tuple[object, ...] = (str, int, bool, tuple[str, ...])
+
+
 def _check_bodies(bodies: dict[str, type]) -> None:
-    """Refuse a body field that shares a name with the envelope or `v`/`kind`.
+    """Refuse a body field the envelope owns, or one of a type we cannot carry.
+
+    The wire form is flat, so a field sharing a name with the envelope or
+    `v`/`kind` would overwrite the envelope's value on write, `name` (the
+    partition key) included, and the event would be filed under the wrong agent
+    without any error. Failing at import puts the mistake in the author's first
+    run instead of in a transcript.
 
     The wire form is flat, so such a field would overwrite the envelope's value
     on write, `name` (the partition key) included, and the event would be
@@ -204,6 +218,10 @@ def _check_bodies(bodies: dict[str, type]) -> None:
         if clash:
             raise TypeError(f"{kind} has field(s) {sorted(clash)} that the "
                             "envelope owns; name them something else")
+        for f in fields(cls):
+            if f.type not in _FIELD_TYPES:
+                raise TypeError(f"{kind}.{f.name} is annotated {f.type!r}; a body "
+                                f"field must be one of {list(_FIELD_TYPES)}")
 
 
 _check_bodies(_BODIES)
