@@ -269,6 +269,14 @@ everything that was refused and so never appeared in the channel at all. Tool
 inputs there are summarised and truncated, because a log that records every
 argument eventually records a password.
 
+Credentials in that summary are masked where they can be recognised — a value
+behind a name like `password` or `API_KEY`, a `Bearer` header, a password in a
+URL, and the token shapes GitHub, Slack, AWS, Google and Anthropic issue. The
+name survives and the value does not, so a refusal still says what you got
+wrong. Treat this as a net and not a guarantee: **a secret with no recognisable
+name and no known shape still reaches the channel and the log.** The same
+masking covers refusal messages in Slack, because they quote the command too.
+
 ### A trap worth knowing
 
 **The shell tool is named per platform** — `Bash` on macOS and Linux,
