@@ -34,8 +34,12 @@ class Stubbed(SdkBackend):
 
     async def _one_turn(self, live, client, text):
         self.order.append(f"start {live.spec.name} {text}")
-        if self._delay:
-            await asyncio.sleep(self._delay)
+        # The deadline belongs to the turn, not to `ask`, so a stub standing in
+        # for a turn has to keep it -- otherwise an overrunning stub is one no
+        # timeout ever reaches.
+        async with asyncio.timeout(self._turn_timeout):
+            if self._delay:
+                await asyncio.sleep(self._delay)
         self.order.append(f"end {live.spec.name} {text}")
         return f"answered {text}"
 
@@ -613,6 +617,43 @@ async def test_a_turn_cancelled_while_it_opens_is_still_closed():
         await backend.close()
     assert [type(e.body).__name__ for e in sink.events] == ["TurnStarted", "TurnEnded"]
     assert sink.events[-1].body.outcome == "timed_out"
+
+
+@needs_sdk
+async def test_a_turn_cancelled_from_outside_closes_as_cut_short():
+    # Not `timed_out`. Shutdown cancels every turn still in flight, and app.py
+    # cancels the backend task when the relay leaves early; while the route is
+    # still bound, reporting those as a timeout posts "ran out of time" into
+    # every live thread on each restart, which is simply untrue.
+    sink = Suspending(pause=0.1)
+    backend = Replaying([spec("ricardi")], [said("hello"), finished()], turn_timeout=60.0)
+    caller = Caller(events=Stream("ricardi", sink))
+    task = asyncio.create_task(backend.ask("ricardi", "go", caller))
+    try:
+        # Lands inside the TurnStarted emit, which is where a shutdown lands.
+        await asyncio.sleep(0.02)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        await backend.close()
+    assert [type(e.body).__name__ for e in sink.events] == ["TurnStarted", "TurnEnded"]
+    assert sink.events[-1].body.outcome == "cut_short"
+
+
+@needs_sdk
+async def test_a_result_the_sdk_called_an_error_does_not_close_as_done():
+    # Not a ceiling, so `_CUT_SHORT` has no entry for it, and the agent had
+    # already spoken. Left as "done" a client and the channel show a
+    # complete-looking answer for a turn the SDK reported as broken.
+    backend, recorder, caller = a_turn(
+        [said("here is what I found"), finished("error_during_execution")]
+    )
+    try:
+        assert await backend.ask("ricardi", "go", caller) == "here is what I found"
+    finally:
+        await backend.close()
+    assert recorder.events[-1].body.outcome == "failed"
 
 
 @needs_sdk
