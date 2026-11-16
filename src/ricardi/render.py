@@ -64,6 +64,16 @@ def _pending(event: Event) -> str:
     return f"_{event.envelope.name}_ is waiting on an answer: {event.body.question} ({options})"
 
 
+def _refused(event: Event) -> str:
+    # Only a refusal that names a tool. A denied tool reached log.info and the
+    # model and no transport saw it; showing those is the point of the stream.
+    # An inbound refusal (tool == "") already reaches the person refused,
+    # privately, through the app; posting it here would tell the whole channel
+    # that someone was turned away. This chooses what to show, not what the
+    # policy allows, so it is not a second policy engine.
+    return event.body.reason if event.body.tool else ""
+
+
 def _quiet(event: Event) -> str:
     return ""
 
@@ -81,7 +91,7 @@ RENDERERS: dict[str, Callable[[Event], str]] = {
     "tool_started": _tool_started,
     "tool_output": _quiet,
     "tool_finished": _tool_finished,
-    "refused": lambda event: event.body.reason,
+    "refused": _refused,
     "diffed": _diffed,
     "pending": _pending,
 }

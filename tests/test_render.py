@@ -40,9 +40,14 @@ def test_a_diff_degrades_to_a_sentence_rather_than_vanishing():
     assert "-a" not in out and "+b" not in out
 
 
-def test_a_refusal_shows_its_reason():
+def test_a_refused_tool_shows_its_reason():
     body = Refused("tier", "You hold read on ricardi.", "read", "Edit", "")
     assert "You hold read on ricardi." in render(event(body))
+
+
+def test_an_inbound_refusal_renders_empty_because_it_already_reached_the_person_privately():
+    body = Refused("default deny", "You can't talk to ricardi.", "", "", "ricardi")
+    assert render(event(body)) == ""
 
 
 def test_a_pending_question_shows_the_question_and_its_options():
