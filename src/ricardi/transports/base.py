@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Protocol, runtime_checkable
 
+from ricardi.events import Event
+
 
 @dataclass(frozen=True)
 class Inbound:
@@ -30,6 +32,17 @@ OnMessage = Callable[[Inbound], Awaitable[None]]
 class Transport(Protocol):
     async def start(self, on_message: OnMessage) -> None: ...
 
-    async def send(self, channel: str, thread: str, text: str) -> None: ...
+    def bind(self, name: str, channel: str, thread: str) -> None:
+        """Say where a name's events go.
+
+        Routing lives here and not on the event: the wire form is shared with
+        clients for which a Slack channel means nothing. One name has one
+        channel, because a session is serial.
+        """
+        ...
+
+    async def emit(self, event: Event) -> None:
+        """Show an event, or not: each transport renders what it can."""
+        ...
 
     async def close(self) -> None: ...
