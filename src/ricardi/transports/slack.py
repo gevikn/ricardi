@@ -110,7 +110,7 @@ class SlackTransport:
         # Turns in flight. Held so they are not garbage collected mid-run, and
         # so shutdown can stop them.
         self._turns: set[asyncio.Task[None]] = set()
-        # Where each name's events are posted, set by whoever started the turn.
+        # Where each turn's events are posted, set by whoever started it.
         self._routes: dict[str, tuple[str, str]] = {}
 
     async def start(self, on_message: OnMessage) -> None:
@@ -162,13 +162,16 @@ class SlackTransport:
         self._handler = AsyncSocketModeHandler(app, self._app_token)
         await self._handler.connect_async()
 
-    def bind(self, name: str, channel: str, thread: str) -> None:
-        self._routes[name] = (channel, thread)
+    def bind(self, turn: str, channel: str, thread: str) -> None:
+        self._routes[turn] = (channel, thread)
+
+    def unbind(self, turn: str) -> None:
+        self._routes.pop(turn, None)
 
     async def emit(self, event: Event) -> None:
         # Raised, not skipped: an event with nowhere to go is a wiring bug,
         # and the stream logs what a sink raises.
-        channel, thread = self._routes[event.envelope.name]
+        channel, thread = self._routes[event.envelope.turn]
         text = render(event)
         if text:
             await self.send(channel, thread, text)

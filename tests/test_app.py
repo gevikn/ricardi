@@ -1,5 +1,7 @@
 """One turn at a time, with a fake agent behind it."""
 
+import asyncio
+
 import pytest
 
 from conftest import RendersEvents, open_policy
@@ -539,3 +541,48 @@ async def test_a_relayed_caller_carries_the_turn_and_the_stream():
     # No notice: the channel renders ToolStarted now, and announcing through
     # the caller as well would post the same line for the same call twice.
     assert caller.notice is None
+
+
+# -- two conversations with one agent, at the same time --------------------
+async def test_two_threads_on_one_agent_do_not_cross():
+    # Regression: one route per *name* meant the second message rebound it
+    # while the first turn was still streaming, so the first thread went
+    # silent and the second was shown someone else's answer.
+    transport = Recorder()
+    app = Ricardi(transport=transport, backend=FakeBackend(delay=0.2),
+                  ack_after=30.0, policy=open_policy())
+    await asyncio.gather(
+        app.handle(message("tell scout to read auth.py", thread="t1")),
+        app.handle(message("tell scout to ship it", thread="t2")),
+    )
+    where = {text: thread for _, thread, text in transport.sent}
+    assert where == {"*scout*\n[scout] read auth.py": "t1",
+                     "*scout*\n[scout] ship it": "t2"}
+
+
+async def test_a_message_in_another_thread_does_not_divert_a_running_turn():
+    # The same bug without a second turn: any word Ricardi says about an agent
+    # used to rebind that agent's one route, so a `who` in the thread next
+    # door took the rest of a running turn with it.
+    transport = Recorder()
+    app = Ricardi(transport=transport, backend=FakeBackend(delay=0.2),
+                  ack_after=30.0, policy=open_policy())
+    await app.handle(message("tell scout hello", thread="t2"))
+    running = asyncio.create_task(
+        app.handle(message("tell scout to take its time", thread="t1"))
+    )
+    await asyncio.sleep(0.05)
+    await app.handle(message("who", thread="t2"))
+    await running
+    landed = [(thread, text) for _, thread, text in transport.sent]
+    assert ("t1", "*scout*\n[scout] take its time") in landed
+    assert ("t2", "This thread is talking to *scout*.") in landed
+
+
+async def test_a_finished_message_leaves_no_route_behind(wired):
+    # One route per message is one entry per message; a table nobody clears
+    # is a leak in a process meant to run for months.
+    app, transport, _ = wired
+    await app.handle(message("tell scout to read auth.py"))
+    await app.handle(message("list agents"))
+    assert transport._routes == {}

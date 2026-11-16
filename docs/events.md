@@ -21,7 +21,7 @@ Every event carries these, then `kind`, then the kind's own fields.
 | `seq`   | integer | orders events within one `name`'s stream: it starts at 1, strictly increases, and never repeats. A gap means an event could not be delivered server-side; it is not corruption, and a client must not resync or drop the connection because of one |
 | `at`    | string  | RFC 3339, UTC, whole seconds, e.g. `2026-11-10T15:04:05Z` |
 | `name`  | string  | the agent the event belongs to; streams are partitioned per name so one project's transcript never reaches a client watching another |
-| `turn`  | string  | the turn this event belongs to |
+| `turn`  | string  | the turn this event belongs to: one id per message answered, carried by the agent's events, the gate's refusals and anything Ricardi says about that message. A message she answers herself -- help, a listing -- is a turn of one event, with no `turn_started` |
 | `actor` | string  | who caused it: `owner`, `person`, `agent` or `ricardi` |
 | `kind`  | string  | which of the kinds below this is |
 

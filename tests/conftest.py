@@ -27,14 +27,17 @@ class RendersEvents:
         self.emitted: list[Event] = []
         self._routes: dict[str, tuple[str, str]] = {}
 
-    def bind(self, name: str, channel: str, thread: str) -> None:
-        self._routes[name] = (channel, thread)
+    def bind(self, turn: str, channel: str, thread: str) -> None:
+        self._routes[turn] = (channel, thread)
+
+    def unbind(self, turn: str) -> None:
+        self._routes.pop(turn, None)
 
     async def emit(self, event: Event) -> None:
         self.emitted.append(event)
         # Indexed, not `.get`: an event with nowhere to go is a wiring bug,
         # exactly as it is in slack.py and local.py.
-        channel, thread = self._routes[event.envelope.name]
+        channel, thread = self._routes[event.envelope.turn]
         text = render(event)
         if text:
             await self.send(channel, thread, text)

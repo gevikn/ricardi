@@ -32,12 +32,25 @@ OnMessage = Callable[[Inbound], Awaitable[None]]
 class Transport(Protocol):
     async def start(self, on_message: OnMessage) -> None: ...
 
-    def bind(self, name: str, channel: str, thread: str) -> None:
-        """Say where a name's events go.
+    def bind(self, turn: str, channel: str, thread: str) -> None:
+        """Say where one turn's events go.
 
         Routing lives here and not on the event: the wire form is shared with
-        clients for which a Slack channel means nothing. One name has one
-        channel, because a session is serial.
+        clients for which a Slack channel means nothing.
+
+        By turn, not by name. Two people can be talking to one agent in two
+        threads at once -- the README offers exactly that -- and a destination
+        held per name is one the second conversation overwrites while the first
+        is still streaming: one person's answer posted into the other's thread,
+        and silence in their own.
+        """
+        ...
+
+    def unbind(self, turn: str) -> None:
+        """Forget a turn's destination, once nothing more can be emitted for it.
+
+        A route per turn is a route per message, so a table nobody clears is a
+        slow leak in a process meant to run for months.
         """
         ...
 

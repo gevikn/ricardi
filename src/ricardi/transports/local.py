@@ -47,7 +47,7 @@ class LocalTransport:
         self._on_message: OnMessage | None = None
         self._server: asyncio.base_events.Server | None = None
         self._turns: set[asyncio.Task[None]] = set()
-        # Where each name's events are appended, set by whoever started the turn.
+        # Where each turn's events are appended, set by whoever started it.
         self._routes: dict[str, tuple[str, str]] = {}
 
     # -- Transport ---------------------------------------------------------
@@ -57,13 +57,16 @@ class LocalTransport:
         # port 0 asks the OS for a free one; report back what it gave us.
         self.port = self._server.sockets[0].getsockname()[1]
 
-    def bind(self, name: str, channel: str, thread: str) -> None:
-        self._routes[name] = (channel, thread)
+    def bind(self, turn: str, channel: str, thread: str) -> None:
+        self._routes[turn] = (channel, thread)
+
+    def unbind(self, turn: str) -> None:
+        self._routes.pop(turn, None)
 
     async def emit(self, event: Event) -> None:
         # Raised, not skipped: an event with nowhere to go is a wiring bug,
         # and the stream logs what a sink raises.
-        channel, thread = self._routes[event.envelope.name]
+        channel, thread = self._routes[event.envelope.turn]
         text = render(event)
         if text:
             await self.send(channel, thread, text)
