@@ -445,9 +445,11 @@ def test_the_git_c_form_does_not_become_a_way_to_change_the_checkout(
 def test_the_shipped_example_uses_the_alias_not_a_platform_name():
     # The example is what people copy; a copied rule naming one shell is the
     # trap this alias exists to close.
-    import io
+    from pathlib import Path
 
-    body = io.open("policy.example.toml", encoding="utf-8").read()
+    # read_text rather than io.open(...).read(): the latter left the handle to
+    # the garbage collector, which is a ResourceWarning under -W error.
+    body = Path("policy.example.toml").read_text(encoding="utf-8")
     assert 'tools           = ["shell"]' in body
     assert '"PowerShell"' not in body
 
