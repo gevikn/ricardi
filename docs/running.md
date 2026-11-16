@@ -477,6 +477,13 @@ rather than reporting an empty store.
   is no notification, so this is worth adding to whatever already watches your
   other services. An expired credential used to look identical from inside a
   channel; the next section is about closing that one.
+- A very busy turn can still lose lines in the channel. Every block an agent
+  says and every command it runs is its own Slack post, and Slack rate-limits a
+  channel to roughly one post a second. Rate-limited posts are retried twice,
+  which absorbs an ordinary burst, but a turn with dozens of tool calls can
+  exhaust that, and a line that still fails is logged as a warning and dropped
+  rather than posted. The channel is a view, not the record: `state/audit.jsonl`
+  has every decision, and `python -m ricardi.report` reads it back.
 
 ## The credential check
 

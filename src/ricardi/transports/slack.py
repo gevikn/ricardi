@@ -124,9 +124,30 @@ class SlackTransport:
                 "Slack support isn't installed. Install ricardi with the 'slack' extra."
             ) from exc
 
+        from slack_sdk.http_retry.builtin_async_handlers import (
+            AsyncRateLimitErrorRetryHandler,
+            async_default_handlers,
+        )
+        from slack_sdk.web.async_client import AsyncWebClient
+
+        # A turn is many posts now -- one per text block and one per tool call
+        # -- where it used to be one, and Slack's per-channel ceiling is about
+        # a message a second. slack_sdk's defaults retry a dropped connection
+        # and nothing else, so a 429 would raise, `Stream.emit` would log it,
+        # and the channel would quietly lose the middle of a busy turn. Two
+        # retries, honouring Retry-After, cover an ordinary burst; a very busy
+        # turn can still lose lines, which is why the audit log is the record
+        # and `docs/running.md` says so.
+        client = AsyncWebClient(
+            token=self._bot_token,
+            retry_handlers=[
+                *async_default_handlers(),
+                AsyncRateLimitErrorRetryHandler(max_retry_count=2),
+            ],
+        )
         # AsyncApp does not check the token at construction, so a bad one shows
         # up at the auth_test below rather than here.
-        app = AsyncApp(token=self._bot_token)
+        app = AsyncApp(client=client)
         self._app = app
 
         # Bolt sends Slack's acknowledgement only after the listener returns
